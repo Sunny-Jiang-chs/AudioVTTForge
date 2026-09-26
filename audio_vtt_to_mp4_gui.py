@@ -90,6 +90,24 @@ def write_srt(cues: list[Cue], path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+AUTO_ASSIGNMENT_PREFIX = "自动: "
+
+
+def automatic_image_index(audio_index: int, audio_count: int, image_count: int) -> int:
+    if audio_count < 1 or image_count < 1:
+        raise ValueError("audio_count and image_count must be positive")
+    if not 0 <= audio_index < audio_count:
+        raise ValueError("audio_index is outside the audio range")
+    return min(image_count - 1, audio_index * image_count // audio_count)
+
+
+def video_dimensions(width: int) -> tuple[int, int]:
+    if width < 2 or width % 2:
+        raise ValueError("video width must be a positive even number")
+    height = round(width * 9 / 16)
+    return width, height + height % 2
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -98,6 +116,7 @@ class App:
         self.root.minsize(980, 640)
         self.audio: list[Path] = []
         self.images: list[Path] = []
+        self.manual_assignments: dict[str, str] = {}
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.running = False
         self.output = tk.StringVar()
@@ -161,6 +180,28 @@ class App:
             self.image_list.drop_target_register(DND_FILES)
             self.image_list.dnd_bind("<<Drop>>", lambda event: self.drop(event.data))
 
+        assignment_frame = ttk.Labelframe(content, text="音频-图片分配", padding=8)
+        content.add(assignment_frame, weight=2)
+        assignment_frame.rowconfigure(0, weight=1)
+        assignment_frame.columnconfigure(0, weight=1)
+        self.assignment_canvas = tk.Canvas(assignment_frame, borderwidth=0, highlightthickness=0)
+        assignment_scrollbar = ttk.Scrollbar(assignment_frame, orient="vertical", command=self.assignment_canvas.yview)
+        self.assignment_canvas.configure(yscrollcommand=assignment_scrollbar.set)
+        self.assignment_canvas.grid(row=0, column=0, sticky="nsew")
+        assignment_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.assignment_body = ttk.Frame(self.assignment_canvas)
+        self.assignment_body.columnconfigure(0, weight=1)
+        self.assignment_body.columnconfigure(1, weight=1)
+        self.assignment_window = self.assignment_canvas.create_window((0, 0), window=self.assignment_body, anchor="nw")
+        self.assignment_body.bind(
+            "<Configure>",
+            lambda _event: self.assignment_canvas.configure(scrollregion=self.assignment_canvas.bbox("all")),
+        )
+        self.assignment_canvas.bind(
+            "<Configure>",
+            lambda event: self.assignment_canvas.itemconfigure(self.assignment_window, width=event.width),
+        )
+
         progress_frame = ttk.Labelframe(content, text="任务状态", padding=8)
         content.add(progress_frame, weight=3)
         progress_frame.rowconfigure(1, weight=1)
@@ -198,6 +239,83 @@ class App:
         self.image_list.delete(0, tk.END)
         for path in self.images:
             self.image_list.insert(tk.END, path.name)
+        self._refresh_assignment_rows()
+
+    def _image_label(self, index: int) -> str:
+        return f"{index + 1}. {self.images[index].name}"
+
+    def _automatic_choice(self, audio_index: int) -> str:
+        image_index = automatic_image_index(audio_index, len(self.audio), len(self.images))
+        return f"{AUTO_ASSIGNMENT_PREFIX}{self._image_label(image_index)}"
+
+    def _assignment_choices(self, audio_index: int) -> list[str]:
+        return [self._automatic_choice(audio_index)] + [self._image_label(index) for index in range(len(self.images))]
+
+    def _choice_for_audio(self, audio_index: int) -> str:
+        audio_key = str(self.audio[audio_index])
+        manual_image = self.manual_assignments.get(audio_key)
+        if manual_image:
+            for image_index, image in enumerate(self.images):
+                if str(image) == manual_image:
+                    return self._image_label(image_index)
+        return self._automatic_choice(audio_index)
+
+    def _refresh_assignment_rows(self) -> None:
+        valid_audio = {str(path) for path in self.audio}
+        valid_images = {str(path) for path in self.images}
+        self.manual_assignments = {
+            audio: image
+            for audio, image in self.manual_assignments.items()
+            if audio in valid_audio and image in valid_images
+        }
+        for child in self.assignment_body.winfo_children():
+            child.destroy()
+        ttk.Label(self.assignment_body, text="音频").grid(row=0, column=0, sticky="w", padx=(2, 8), pady=(0, 5))
+        ttk.Label(self.assignment_body, text="使用图片").grid(row=0, column=1, sticky="ew", padx=(8, 2), pady=(0, 5))
+        if not self.images:
+            ttk.Label(self.assignment_body, text="请先导入图片").grid(
+                row=1, column=0, columnspan=2, sticky="w", padx=2, pady=4
+            )
+            return
+        for audio_index, audio in enumerate(self.audio, 1):
+            ttk.Label(self.assignment_body, text=audio.name).grid(
+                row=audio_index, column=0, sticky="w", padx=(2, 8), pady=2
+            )
+            variable = tk.StringVar(value=self._choice_for_audio(audio_index - 1))
+            combo = ttk.Combobox(
+                self.assignment_body,
+                textvariable=variable,
+                values=self._assignment_choices(audio_index - 1),
+                state="readonly",
+            )
+            combo.grid(row=audio_index, column=1, sticky="ew", padx=(8, 2), pady=2)
+            combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, path=audio, value=variable: self._assignment_changed(path, value),
+            )
+
+    def _assignment_changed(self, audio: Path, variable: tk.StringVar) -> None:
+        selection = variable.get()
+        audio_key = str(audio)
+        if selection.startswith(AUTO_ASSIGNMENT_PREFIX):
+            self.manual_assignments.pop(audio_key, None)
+        else:
+            for image_index, image in enumerate(self.images):
+                if selection == self._image_label(image_index):
+                    self.manual_assignments[audio_key] = str(image)
+                    break
+        self.save()
+
+    def resolve_assignments(self) -> list[int]:
+        image_indices = {str(image): index for index, image in enumerate(self.images)}
+        assignments: list[int] = []
+        for audio_index, audio in enumerate(self.audio):
+            manual_image = self.manual_assignments.get(str(audio))
+            if manual_image in image_indices:
+                assignments.append(image_indices[manual_image])
+            else:
+                assignments.append(automatic_image_index(audio_index, len(self.audio), len(self.images)))
+        return assignments
 
     def add_audio(self) -> None:
         for item in filedialog.askopenfilenames(filetypes=[("音频", "*.wav *.mp3")]):
@@ -235,6 +353,7 @@ class App:
         if not self.running:
             self.audio.clear()
             self.images.clear()
+            self.manual_assignments.clear()
             self.output.set("")
             self._refresh()
             self.save()
@@ -246,6 +365,9 @@ class App:
             return
         self.audio = [Path(p) for p in data.get("audio_paths", []) if Path(p).is_file()]
         self.images = [Path(p) for p in data.get("image_paths", []) if Path(p).is_file()]
+        raw_assignments = data.get("image_assignments", {})
+        if isinstance(raw_assignments, dict):
+            self.manual_assignments = {str(audio): str(image) for audio, image in raw_assignments.items()}
         self.output.set(data.get("output", ""))
         for variable, key in ((self.subtitle, "subtitle"), (self.fps, "fps"), (self.width, "width"), (self.workers, "workers")):
             if key in data:
@@ -259,6 +381,7 @@ class App:
             CONFIG.write_text(json.dumps({
                 "audio_paths": [str(p) for p in self.audio],
                 "image_paths": [str(p) for p in self.images],
+                "image_assignments": self.manual_assignments,
                 "output": self.output.get(),
                 "subtitle": self.subtitle.get(),
                 "fps": self.fps.get(),
@@ -301,12 +424,18 @@ class App:
         except ValueError:
             messagebox.showerror("进程数无效", "并行进程数必须是正整数。")
             return
+        assignment = self.resolve_assignments()
+        self.save()
         self.running = True
         self.start_button.configure(state="disabled")
         self.total_progress.set(1)
         self.status.set("已开始：读取音频时长...")
         self.set_tasks()
-        threading.Thread(target=self.run, args=(min(requested, len(self.audio)),), daemon=True).start()
+        threading.Thread(
+            target=self.run,
+            args=(min(requested, len(self.audio)), assignment),
+            daemon=True,
+        ).start()
 
     def probe(self, audio: Path) -> float:
         args = [str(self.ffprobe), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "json", str(audio)]
@@ -319,21 +448,72 @@ class App:
                     raise RuntimeError(f"FFprobe 失败：{audio.name}\n{exc.stderr or exc.stdout}") from exc
                 time.sleep(0.8 * (attempt + 1))
 
-    def run(self, workers: int) -> None:
+    def merge_segments(
+        self,
+        segments: list[Path],
+        work: Path,
+        output: Path,
+        concat_name: str,
+        merge_name: str,
+        log_name: str,
+    ) -> None:
+        concat = work / concat_name
+        concat.write_text("\n".join(f"file '{path.resolve()}'" for path in segments), encoding="utf-8")
+        merge_output = work / merge_name
+        join_log = work / log_name
+        output_args = [
+            str(self.ffmpeg),
+            "-hide_banner",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(merge_output),
+        ]
+        try:
+            with join_log.open("w", encoding="utf-8") as log:
+                result = subprocess.run(
+                    output_args,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=env_for(self.ffmpeg),
+                    check=False,
+                )
+        except OSError as exc:
+            try:
+                join_log.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            except OSError:
+                pass
+            raise RuntimeError(f"合并进程启动失败，日志：{join_log}") from exc
+        if result.returncode != 0:
+            try:
+                details = join_log.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                details = ""
+            raise RuntimeError(f"合并失败，日志：{join_log}\n{details[-2000:]}")
+        try:
+            os.replace(merge_output, output)
+        except OSError as exc:
+            raise RuntimeError(f"无法替换输出文件，可能正在被其他程序占用：{output}") from exc
+
+    def run(self, workers: int, assignment: list[int]) -> None:
         work: Path | None = None
         try:
             durations = [self.probe(path) for path in self.audio]
             width = int(self.width.get())
-            height = width * 9 // 16
+            width, height = video_dimensions(width)
             fps = int(self.fps.get())
             output = Path(self.output.get())
             output.parent.mkdir(parents=True, exist_ok=True)
             work = output.parent / f".{output.stem}_parallel_work"
             work.mkdir(parents=True, exist_ok=True)
-            groups = [[] for _ in self.images]
-            for index in range(len(self.audio)):
-                groups[min(len(groups) - 1, index * len(groups) // len(self.audio))].append(index)
-            assignment = {index: image for image, group in enumerate(groups) for index in group}
 
             def render(index: int) -> Path:
                 audio = self.audio[index]
@@ -370,12 +550,7 @@ class App:
                     segments[index] = future.result()
                     self.task(index, "完成", "100%", self.audio[index].name)
                     self.events.put(("overall", 10 + sum(path.exists() for path in segments) / len(segments) * 80))
-            concat = work / "segments.txt"
-            concat.write_text("\n".join(f"file '{path.resolve()}'" for path in segments), encoding="utf-8")
-            output_args = [str(self.ffmpeg), "-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", "-movflags", "+faststart", str(output)]
-            with (work / "join.log").open("w", encoding="utf-8") as log:
-                if subprocess.run(output_args, stdout=log, stderr=subprocess.STDOUT, env=env_for(self.ffmpeg)).returncode != 0:
-                    raise RuntimeError(f"合并失败，日志：{work / 'join.log'}")
+            self.merge_segments(segments, work, output, "segments.txt", "merged.mp4", "join.log")
             shutil.rmtree(work)
             self.events.put(("done", str(output)))
         except Exception as exc:
@@ -385,16 +560,25 @@ class App:
         work = filedialog.askdirectory(title="选择 _parallel_work 中间目录")
         if not work:
             return
-        segments = sorted(Path(work).glob("*.mp4"))
+        segments = sorted(path for path in Path(work).glob("*.mp4") if path.stem.isdigit())
         if not segments:
             messagebox.showerror("没有分段", "所选目录中没有 MP4 分段。")
             return
         output = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4", "*.mp4")])
         if not output:
             return
-        concat = Path(work) / "segments_recovery.txt"
-        concat.write_text("\n".join(f"file '{p.resolve()}'" for p in segments), encoding="utf-8")
-        subprocess.Popen([str(self.ffmpeg), "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", "-movflags", "+faststart", output], env=env_for(self.ffmpeg))
+        try:
+            self.merge_segments(
+                segments,
+                Path(work),
+                Path(output),
+                "segments_recovery.txt",
+                "merged_recovery.mp4",
+                "join_recovery.log",
+            )
+            messagebox.showinfo("合并完成", str(output))
+        except Exception as exc:
+            messagebox.showerror("合并失败", str(exc))
 
     def poll(self) -> None:
         try:
