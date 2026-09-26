@@ -101,6 +101,13 @@ def automatic_image_index(audio_index: int, audio_count: int, image_count: int) 
     return min(image_count - 1, audio_index * image_count // audio_count)
 
 
+def video_dimensions(width: int) -> tuple[int, int]:
+    if width < 2 or width % 2:
+        raise ValueError("video width must be a positive even number")
+    height = round(width * 9 / 16)
+    return width, height + height % 2
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -441,12 +448,67 @@ class App:
                     raise RuntimeError(f"FFprobe 失败：{audio.name}\n{exc.stderr or exc.stdout}") from exc
                 time.sleep(0.8 * (attempt + 1))
 
+    def merge_segments(
+        self,
+        segments: list[Path],
+        work: Path,
+        output: Path,
+        concat_name: str,
+        merge_name: str,
+        log_name: str,
+    ) -> None:
+        concat = work / concat_name
+        concat.write_text("\n".join(f"file '{path.resolve()}'" for path in segments), encoding="utf-8")
+        merge_output = work / merge_name
+        join_log = work / log_name
+        output_args = [
+            str(self.ffmpeg),
+            "-hide_banner",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(concat),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(merge_output),
+        ]
+        try:
+            with join_log.open("w", encoding="utf-8") as log:
+                result = subprocess.run(
+                    output_args,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=env_for(self.ffmpeg),
+                    check=False,
+                )
+        except OSError as exc:
+            try:
+                join_log.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+            except OSError:
+                pass
+            raise RuntimeError(f"合并进程启动失败，日志：{join_log}") from exc
+        if result.returncode != 0:
+            try:
+                details = join_log.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                details = ""
+            raise RuntimeError(f"合并失败，日志：{join_log}\n{details[-2000:]}")
+        try:
+            os.replace(merge_output, output)
+        except OSError as exc:
+            raise RuntimeError(f"无法替换输出文件，可能正在被其他程序占用：{output}") from exc
+
     def run(self, workers: int, assignment: list[int]) -> None:
         work: Path | None = None
         try:
             durations = [self.probe(path) for path in self.audio]
             width = int(self.width.get())
-            height = width * 9 // 16
+            width, height = video_dimensions(width)
             fps = int(self.fps.get())
             output = Path(self.output.get())
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -488,12 +550,7 @@ class App:
                     segments[index] = future.result()
                     self.task(index, "完成", "100%", self.audio[index].name)
                     self.events.put(("overall", 10 + sum(path.exists() for path in segments) / len(segments) * 80))
-            concat = work / "segments.txt"
-            concat.write_text("\n".join(f"file '{path.resolve()}'" for path in segments), encoding="utf-8")
-            output_args = [str(self.ffmpeg), "-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", "-movflags", "+faststart", str(output)]
-            with (work / "join.log").open("w", encoding="utf-8") as log:
-                if subprocess.run(output_args, stdout=log, stderr=subprocess.STDOUT, env=env_for(self.ffmpeg)).returncode != 0:
-                    raise RuntimeError(f"合并失败，日志：{work / 'join.log'}")
+            self.merge_segments(segments, work, output, "segments.txt", "merged.mp4", "join.log")
             shutil.rmtree(work)
             self.events.put(("done", str(output)))
         except Exception as exc:
@@ -503,16 +560,25 @@ class App:
         work = filedialog.askdirectory(title="选择 _parallel_work 中间目录")
         if not work:
             return
-        segments = sorted(Path(work).glob("*.mp4"))
+        segments = sorted(path for path in Path(work).glob("*.mp4") if path.stem.isdigit())
         if not segments:
             messagebox.showerror("没有分段", "所选目录中没有 MP4 分段。")
             return
         output = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4", "*.mp4")])
         if not output:
             return
-        concat = Path(work) / "segments_recovery.txt"
-        concat.write_text("\n".join(f"file '{p.resolve()}'" for p in segments), encoding="utf-8")
-        subprocess.Popen([str(self.ffmpeg), "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", "-movflags", "+faststart", output], env=env_for(self.ffmpeg))
+        try:
+            self.merge_segments(
+                segments,
+                Path(work),
+                Path(output),
+                "segments_recovery.txt",
+                "merged_recovery.mp4",
+                "join_recovery.log",
+            )
+            messagebox.showinfo("合并完成", str(output))
+        except Exception as exc:
+            messagebox.showerror("合并失败", str(exc))
 
     def poll(self) -> None:
         try:
