@@ -1,66 +1,56 @@
 # AudioVTTForge
 
-Local Windows GUI for combining WAV/MP3 audio, matching WebVTT subtitles, and still images into MP4.
+AudioVTTForge 是一个运行在 Windows 上的图形化工具，用于将 WAV/MP3 音频、对应的 WebVTT 字幕和图片合成为 MP4 视频。
 
-## Features
+## 功能
 
-- Batch WAV/MP3 import.
-- Matching subtitles named `audio.wav.vtt` or `audio.mp3.vtt`.
-- Image drag-and-drop when `tkinterdnd2` is installed.
-- Per-audio parallel rendering with AAC output by default.
-- Full-image presentation with proportional scaling and letterboxing.
-- Per-file status table plus overall progress.
-- Resume-friendly intermediate segment directory.
-- Separate merge action for existing segments.
-- Persistent user settings in `%APPDATA%\AudioVttToMp4Parallel\settings.json`.
+- 支持批量导入 WAV 和 MP3 音频。
+- 自动匹配对应的 WebVTT 字幕文件。
+- 支持直接拖入图片；未安装拖放组件时也可以通过文件选择器导入。
+- 支持多个音频并行处理。
+- 默认使用 AAC 编码输出音频。
+- 图片按比例缩放，完整显示图片内容，避免强制拉伸。
+- 支持选择视频帧率和图片分辨率。
+- 提供每个音频的处理状态、进度和整体进度。
+- 支持保留中间分段，便于中断后继续处理。
+- 支持对已有分段单独执行合并。
+- 自动保存上次使用的音频、图片和处理设置。
 
-## Requirements
+## 环境要求
 
 - Windows
-- Python 3.11+
-- FFmpeg and FFprobe at the configured local path
-- Optional: `tkinterdnd2` for native file drag-and-drop
-- PyInstaller for EXE builds
+- Python 3.11 或更高版本
+- FFmpeg 和 FFprobe
+- 可选：`tkinterdnd2`，用于启用原生文件拖放
+- PyInstaller，用于构建 EXE
 
-## Run
+默认 FFmpeg 路径由程序配置。若本机路径不同，请在源码中的配置区域修改。
+
+## 运行源码
+
+在项目目录中执行：
 
 ```powershell
 python .\audio_vtt_to_mp4_gui.py
 ```
 
-## Build
+## 构建 EXE
+
+执行：
 
 ```powershell
 .\build.ps1
 ```
 
-The EXE is written to `dist\AudioVTTForge.exe`.
+构建完成后，EXE 位于：
 
-## Git Workflow
-
-This directory is an independent Git repository. Build outputs, Python caches, local logs, and generated EXE files are ignored.
-
-Create a commit for current changes:
-
-```powershell
-.\auto_commit.ps1 -Message "describe the change"
+```text
+dist\AudioVTTForge.exe
 ```
 
-Watch the project and automatically commit detected changes:
+## 输入文件命名
 
-```powershell
-.\watch_and_commit.ps1
-```
-
-To also push each commit to the configured remote:
-
-```powershell
-.\watch_and_commit.ps1 -Push
-```
-
-Do not put GitHub passwords or access tokens in project files. Configure GitHub authentication separately on the machine.
-
-## Input Naming
+音频和字幕建议使用以下命名方式：
 
 ```text
 01.wav
@@ -68,8 +58,54 @@ Do not put GitHub passwords or access tokens in project files. Configure GitHub 
 cover.jpg
 ```
 
-Images are assigned to consecutive audio groups in order. For example, five audio files and two images use the first image for the first two audio files and the second image for the remaining three.
+也支持 MP3：
 
-## License
+```text
+01.mp3
+01.mp3.vtt
+```
 
-Add a license before publishing if this project is intended for redistribution.
+程序会根据音频文件名查找对应的 `.wav.vtt` 或 `.mp3.vtt` 文件。
+
+## 图片分配规则
+
+图片按照音频顺序分组分配。
+
+例如有 5 个音频和 2 张图片：
+
+- 第 1、2 个音频使用第 1 张图片；
+- 第 3、4、5 个音频使用第 2 张图片。
+
+## 输出和中间文件
+
+输出 MP4 会根据音频所在目录和输入文件自动生成。处理过程中会创建并行工作目录，用于保存中间视频分段。
+
+确认合成完成后，程序会清理本次生成的中间文件。如果处理中断，可以使用已有分段执行单独合并，或重新开始处理。
+
+## Git 工作流
+
+本目录是独立 Git 仓库。构建产物、Python 缓存、日志和生成的 EXE 默认不会提交到仓库。
+
+手动提交当前修改：
+
+```powershell
+.\auto_commit.ps1 -Message "描述本次修改"
+```
+
+持续监测项目并自动提交：
+
+```powershell
+.\watch_and_commit.ps1
+```
+
+自动提交后同时推送到远程仓库：
+
+```powershell
+.\watch_and_commit.ps1 -Push
+```
+
+GitHub 登录需要在本机单独配置，不要把密码或访问令牌写入项目文件。
+
+## 许可证
+
+如果计划公开发布或再分发本项目，请在发布前添加合适的许可证文件。
