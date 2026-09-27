@@ -34,6 +34,36 @@ AudioVTTForge 是一个运行在 Windows 上的图形化工具，用于将 WAV/M
 python .\audio_vtt_to_mp4_gui.py
 ```
 
+核心处理流程也可以完全脱离 GUI 运行。CLI 使用一个 JSON 文件描述任务：
+
+```json
+{
+  "audio": ["01.wav"],
+  "images": ["cover.jpg"],
+  "assignments": [0],
+  "output": "result.mp4",
+  "subtitle": "burnin",
+  "fps": 2,
+  "width": 1920,
+  "workers": 2
+}
+```
+
+CLI 命令：
+
+```powershell
+python -m audiovttforge doctor
+python -m audiovttforge validate .\job.json
+python -m audiovttforge plan .\job.json
+python -m audiovttforge run .\job.json --keep-work
+python -m audiovttforge run .\job.json --workers 1 --resume
+python -m audiovttforge merge .\.result_parallel_work .\result.mp4
+```
+
+`run` 会将 JSONL 事件写入输出目录的 `.result.events.jsonl`，失败时保留中间工作目录和每个分段的 FFmpeg 日志。`--keep-work` 保留成功任务的中间文件，`--resume` 跳过已经生成的分段。`--workers 1` 适合复现问题，CLI 的标准输出也会逐行输出同样的机器可读事件。
+
+FFmpeg 和 FFprobe 默认使用源码中的 Windows 路径，也可以通过 `AUDIOVTTFORGE_FFMPEG`、`AUDIOVTTFORGE_FFPROBE` 环境变量或 CLI 参数覆盖。
+
 ## 构建 EXE
 
 执行：
@@ -83,6 +113,16 @@ cover.jpg
 输出 MP4 会根据音频所在目录和输入文件自动生成。处理过程中会创建并行工作目录，用于保存中间视频分段。
 
 确认合成完成后，程序会清理本次生成的中间文件。如果处理中断，可以使用已有分段执行单独合并，或重新开始处理。
+
+## 架构和测试
+
+`audiovttforge` 包含不依赖 Tkinter 的媒体解析、任务模型、FFmpeg engine 和 CLI。GUI 只负责编辑输入、生成任务快照和消费 engine 事件。
+
+运行 headless 测试：
+
+```powershell
+python -m pytest -q
+```
 
 ## 许可证
 
