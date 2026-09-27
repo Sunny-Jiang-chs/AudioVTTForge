@@ -179,10 +179,25 @@ class RenderEngine:
             str(image),
             "-i",
             str(audio),
+        ]
+        if job.subtitle == "embedded":
+            args += ["-i", str(audio.with_name(audio.name + ".vtt"))]
+        args += [
             "-map",
             "0:v:0",
             "-map",
             "1:a:0",
+        ]
+        if job.subtitle == "burnin" and subtitle_path:
+            escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+            video_filter += (
+                f",subtitles='{escaped}':force_style="
+                "'FontName=Microsoft YaHei,FontSize=42,Outline=2,Shadow=1,"
+                "Alignment=2,MarginV=48'"
+            )
+        elif job.subtitle == "embedded":
+            args += ["-map", "2:0"]
+        args += [
             "-vf",
             video_filter,
             "-r",
@@ -206,15 +221,8 @@ class RenderEngine:
             "-t",
             f"{duration:.3f}",
         ]
-        if job.subtitle == "burnin" and subtitle_path:
-            escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
-            args[args.index("-vf") + 1] += (
-                f",subtitles='{escaped}':force_style="
-                "'FontName=Microsoft YaHei,FontSize=42,Outline=2,Shadow=1,"
-                "Alignment=2,MarginV=48'"
-            )
-        elif job.subtitle == "embedded":
-            args += ["-i", str(audio.with_name(audio.name + ".vtt")), "-map", "2:0", "-c:s", "mov_text"]
+        if job.subtitle == "embedded":
+            args += ["-c:s", "mov_text"]
         args += ["-movflags", "+faststart", str(segment)]
         return _tool_command(job.ffmpeg, args)
 
@@ -326,24 +334,7 @@ class RenderEngine:
         )
         merge_output = work / "merged.mp4"
         log_path = work / log_name
-        command = _tool_command(
-            ffmpeg,
-            [
-                "-hide_banner",
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                str(concat),
-                "-c",
-                "copy",
-                "-movflags",
-                "+faststart",
-                str(merge_output),
-            ],
-        )
+        command = self._merge_command(ffmpeg, concat, merge_output)
         events.emit("merge_started", command=command, output=str(output))
         try:
             with log_path.open("w", encoding="utf-8") as log:
@@ -366,6 +357,29 @@ class RenderEngine:
         except OSError as exc:
             raise EngineError(f"Could not replace output file: {output}") from exc
         events.emit("merge_finished", output=str(output))
+
+    @staticmethod
+    def _merge_command(ffmpeg: Path, concat: Path, output: Path) -> list[str]:
+        return _tool_command(
+            ffmpeg,
+            [
+                "-hide_banner",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat),
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(output),
+            ],
+        )
 
     def run(self, job: JobSpec, keep_work: bool = False, resume: bool = False) -> RunResult:
         errors = validate_job(job)

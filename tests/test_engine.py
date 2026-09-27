@@ -70,6 +70,54 @@ def test_engine_runs_without_gui(tmp_path: Path) -> None:
     assert logged_types[-1] == "job_finished"
 
 
+def test_embedded_subtitle_input_precedes_output_options(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+    job = JobSpec(
+        **{
+            **job.__dict__,
+            "subtitle": "embedded",
+        }
+    )
+
+    command = RenderEngine()._render_command(
+        job,
+        index=0,
+        duration=1.25,
+        segment=tmp_path / "segment.mp4",
+        subtitle_path=None,
+    )
+
+    vtt_index = command.index(str(job.audio[0].with_name(job.audio[0].name + ".vtt")))
+    assert command[vtt_index - 1] == "-i"
+    assert command.index("-map") < command.index("-vf")
+    assert command.index("2:0") < command.index("-vf")
+    assert command.index("-c:s") < command.index("-movflags")
+
+
+def test_merge_preserves_all_streams() -> None:
+    command = RenderEngine()._merge_command(
+        Path("ffmpeg.exe"),
+        Path("segments.txt"),
+        Path("merged.mp4"),
+    )
+
+    assert command[command.index("-map") + 1] == "0"
+    assert command.index("-map") < command.index("-c")
+
+
+def test_embedded_subtitle_runs_with_fake_tools(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+    job = JobSpec(**{**job.__dict__, "subtitle": "embedded"})
+
+    result = RenderEngine().run(job, keep_work=True)
+
+    assert result.output.is_file()
+
+
 def test_engine_resume_skips_existing_segment(tmp_path: Path) -> None:
     tool = tmp_path / "fake_tool.py"
     tool.write_text(FAKE_TOOL, encoding="utf-8")
