@@ -72,13 +72,13 @@ FFmpeg 和 FFprobe 默认使用源码中的 Windows 路径，也可以通过 `AU
 .\build.ps1
 ```
 
-构建完成后，EXE 位于：
+默认构建为 onedir 目录版，EXE 位于：
 
 ```text
-dist\AudioVTTForge.exe
+dist\AudioVTTForge\AudioVTTForge.exe
 ```
 
-构建会先在临时目录生成 EXE，再重试替换 `dist` 中的旧文件。若旧 EXE 正被运行中的程序或资源管理器占用，脚本会保留新的构建文件并报告其路径；通常关闭旧版 GUI 后重新执行即可。
+目录版不需要在启动时解包到 `%TEMP%`，适合日常使用。若确实需要单文件版本，可以执行 `.\build.ps1 -Mode onefile`；单文件版本依赖可写的 `%TEMP%`。构建会先生成到 `dist` 下的临时目录，再重试替换旧目录；若旧版 GUI 正在运行导致替换失败，脚本会保留新构建并报告其路径。
 
 ## 输入文件命名
 
