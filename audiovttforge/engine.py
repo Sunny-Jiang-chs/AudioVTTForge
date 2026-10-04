@@ -126,8 +126,6 @@ def validate_job(job: JobSpec, check_tools: bool = True) -> list[str]:
     for path in job.audio:
         if not path.is_file():
             errors.append(f"Missing audio file: {path}")
-        if job.subtitle != "none" and not path.with_name(path.name + ".vtt").is_file():
-            errors.append(f"Missing VTT file: {path.name}.vtt")
     for path in job.images:
         if not path.is_file():
             errors.append(f"Missing image file: {path}")
@@ -202,8 +200,10 @@ class RenderEngine:
             "-i",
             str(audio),
         ]
-        if job.subtitle == "embedded":
-            args += ["-i", str(audio.with_name(audio.name + ".vtt"))]
+        subtitle_path = self._subtitle_path(audio)
+        has_subtitle = subtitle_path.is_file()
+        if job.subtitle == "embedded" and has_subtitle:
+            args += ["-i", str(subtitle_path)]
         args += [
             "-map",
             "0:v:0",
@@ -217,7 +217,7 @@ class RenderEngine:
                 "'FontName=Microsoft YaHei,FontSize=42,Outline=2,Shadow=1,"
                 "Alignment=2,MarginV=48'"
             )
-        elif job.subtitle == "embedded":
+        elif job.subtitle == "embedded" and has_subtitle:
             args += ["-map", "2:0"]
         args += [
             "-vf",
@@ -243,10 +243,14 @@ class RenderEngine:
             "-t",
             f"{duration:.3f}",
         ]
-        if job.subtitle == "embedded":
+        if job.subtitle == "embedded" and has_subtitle:
             args += ["-c:s", "mov_text"]
         args += ["-movflags", "+faststart", str(segment)]
         return _tool_command(job.ffmpeg, args)
+
+    @staticmethod
+    def _subtitle_path(audio: Path) -> Path:
+        return audio.with_name(audio.name + ".vtt")
 
     def _probe(self, job: JobSpec, audio: Path, events: EventLog) -> float:
         args = _tool_command(
@@ -302,10 +306,19 @@ class RenderEngine:
             events.emit("task_skipped", index=index, audio=str(audio), segment=str(segment))
             return segment
 
+        vtt_path = self._subtitle_path(audio)
+        has_vtt = vtt_path.is_file()
         srt_path: Path | None = None
-        if job.subtitle == "burnin":
+        if job.subtitle == "burnin" and has_vtt:
             srt_path = work / f"{index:04d}.srt"
-            write_srt(read_vtt(audio.with_name(audio.name + ".vtt")), srt_path)
+            write_srt(read_vtt(vtt_path), srt_path)
+        elif job.subtitle != "none" and not has_vtt:
+            events.emit(
+                "subtitle_missing",
+                index=index,
+                audio=str(audio),
+                vtt=str(vtt_path),
+            )
         command = self._render_command(job, index, duration, segment, srt_path)
         log_path = work / f"{index:04d}.log"
         events.emit("task_started", index=index, audio=str(audio), command=command)

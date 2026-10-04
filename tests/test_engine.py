@@ -211,4 +211,18 @@ def test_validation_reports_missing_inputs(tmp_path: Path) -> None:
 
     assert any("Missing audio" in error for error in errors)
     assert any("Missing image" in error for error in errors)
-    assert any("Missing VTT" in error for error in errors)
+    assert not any("Missing VTT" in error for error in errors)
+
+
+def test_engine_allows_missing_vtt_and_renders_without_subtitles(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+    job.audio[0].with_name(job.audio[0].name + ".vtt").unlink()
+    events: list[dict] = []
+
+    result = RenderEngine(events.append).run(job, keep_work=True)
+
+    assert result.output.is_file()
+    assert "subtitle_missing" in [event["type"] for event in events]
+    assert not (result.work / "0000.srt").exists()

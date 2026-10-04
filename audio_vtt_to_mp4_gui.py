@@ -625,10 +625,15 @@ class App:
                     self.status.set(f"已读取：{Path(str(event['audio'])).name}")
                 elif event_type == "task_started":
                     index = int(event["index"])
+                    subtitle = "有字幕" if Path(str(event["audio"])).with_name(
+                        Path(str(event["audio"])).name + ".vtt"
+                    ).is_file() else "无字幕"
                     self.task_table.item(
                         str(index),
-                        values=("处理中", "0%", Path(str(event["audio"])).name),
+                        values=("处理中", "0%", f"{Path(str(event['audio'])).name}  [{subtitle}]"),
                     )
+                elif event_type == "subtitle_missing":
+                    self.status.set(f"{Path(str(event['audio'])).name} 无字幕，继续生成无字幕片段")
                 elif event_type == "task_progress":
                     index = int(event["index"])
                     self.task_table.item(
