@@ -428,7 +428,7 @@ class RenderEngine:
         except OSError as exc:
             raise EngineError(
                 f"Output directory is not writable: {job.output.parent}. "
-                "Choose a user-writable folder such as Videos\\AudioVTTForge."
+                "Choose a user-writable output folder. Temporary files stay beside the output and are cleaned after success."
             ) from exc
         work = job.output.parent / f".{job.output.stem}_parallel_work"
         work.mkdir(parents=True, exist_ok=True)

@@ -32,29 +32,9 @@ CONFIG = (
 AUTO_ASSIGNMENT_PREFIX = "自动: "
 
 
-def _writable_output_folder() -> Path:
-    candidates = [
-        Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "AudioVTTForge",
-        Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        / "AudioVTTForge"
-        / "output",
-        Path.home() / "AudioVTTForge-output",
-    ]
-    for folder in candidates:
-        try:
-            folder.mkdir(parents=True, exist_ok=True)
-            probe = folder / ".write-test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink()
-            return folder
-        except OSError:
-            continue
-    return candidates[-1]
-
-
 def default_output_path(audio: Path) -> Path:
-    """Select a directory that the current user can actually write to."""
-    return _writable_output_folder() / f"{audio.stem}_merged.mp4"
+    """Keep the default output beside the selected audio, never in a hidden app folder."""
+    return audio.with_name(f"{audio.stem}_merged.mp4")
 
 
 class App:
@@ -582,7 +562,7 @@ class App:
         except OSError as exc:
             messagebox.showerror(
                 "输出目录不可写",
-                f"无法写入输出目录：{job.output.parent}\n请点击“选择”改用可写目录，或使用默认的本地应用数据目录。\n{exc}",
+                f"无法写入输出目录：{job.output.parent}\n请点击“选择”改用可写目录。临时文件只会写入输出目录旁的隐藏工作目录。\n{exc}",
             )
             return
         self.save()
