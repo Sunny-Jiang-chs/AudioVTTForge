@@ -80,6 +80,10 @@ try {
             Copy-Item -LiteralPath $built -Destination $fallback -Force
             throw "Could not replace $target after $ReplaceRetries attempts. The new EXE was saved to $fallback. Close the running app and retry. Last error: $($lastError.Exception.Message)"
         }
+        $legacyDirectory = Join-Path $dist "AudioVTTForge"
+        if (Test-Path -LiteralPath $legacyDirectory -PathType Container) {
+            [System.IO.Directory]::Delete($legacyDirectory, $true)
+        }
         Write-Output "EXE: $target"
     } else {
         $built = Join-Path $staging "AudioVTTForge"
@@ -123,6 +127,10 @@ try {
             $fallback = Join-Path $dist ("AudioVTTForge.new-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
             Copy-Item -LiteralPath $built -Destination $fallback -Recurse -Force
             throw "Could not replace $target after $ReplaceRetries attempts. The new build was saved to $fallback. Close the running app and retry. Last error: $($lastError.Exception.Message)"
+        }
+        $legacyOneFile = Join-Path $dist "AudioVTTForge.exe"
+        if (Test-Path -LiteralPath $legacyOneFile -PathType Leaf) {
+            [System.IO.File]::Delete($legacyOneFile)
         }
         Write-Output "EXE: $(Join-Path $target 'AudioVTTForge.exe')"
     }
