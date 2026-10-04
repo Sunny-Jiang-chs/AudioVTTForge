@@ -393,7 +393,11 @@ class RenderEngine:
         try:
             os.replace(merge_output, output)
         except OSError as exc:
-            raise EngineError(f"Could not replace output file: {output}") from exc
+            raise EngineError(
+                f"Could not replace output file: {output} "
+                f"(errno={exc.errno}, winerror={getattr(exc, 'winerror', None)}, "
+                f"source={str(merge_output)!r}, target={str(output)!r})"
+            ) from exc
         events.emit("merge_finished", output=str(output))
 
     @staticmethod

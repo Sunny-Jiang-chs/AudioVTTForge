@@ -29,12 +29,50 @@ CONFIG = (
     / "AudioVttToMp4Parallel"
     / "settings.json"
 )
+DIAGNOSTIC_LOG = (
+    Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    / "AudioVttToMp4Parallel"
+    / "diagnostic.log"
+)
 AUTO_ASSIGNMENT_PREFIX = "自动: "
 
 
 def default_output_path(audio: Path) -> Path:
     """Keep the default output beside the selected audio, never in a hidden app folder."""
     return audio.with_name(f"{audio.stem}_merged.mp4")
+
+
+def probe_output_directory(output: Path) -> None:
+    """Verify the same create/replace operations used by the renderer."""
+    parent = output.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    probe = parent / f".{output.stem}.write-test"
+    replacement = parent / f".{output.stem}.replace-test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        replacement.write_text("old", encoding="utf-8")
+        os.replace(probe, replacement)
+    except OSError as exc:
+        raise OSError(
+            f"output directory probe failed: parent={str(parent)!r}, "
+            f"target={str(output)!r}, errno={exc.errno}, winerror={getattr(exc, 'winerror', None)}, "
+            f"operation={exc.filename!r} -> {exc.filename2!r}"
+        ) from exc
+    finally:
+        for path in (probe, replacement):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def write_diagnostic(message: str) -> None:
+    try:
+        DIAGNOSTIC_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with DIAGNOSTIC_LOG.open("a", encoding="utf-8") as stream:
+            stream.write(message + "\n")
+    except OSError:
+        pass
 
 
 class App:
@@ -554,15 +592,21 @@ class App:
         if errors:
             messagebox.showerror("无法开始", "\n".join(errors))
             return
+        write_diagnostic(
+            "start "
+            f"uid={os.getuid() if hasattr(os, 'getuid') else 'n/a'} "
+            f"user={os.environ.get('USERNAME', '')!r} "
+            f"output={str(job.output)!r} parent={str(job.output.parent)!r} "
+            f"exists={job.output.parent.exists()} target_exists={job.output.exists()}"
+        )
         try:
-            job.output.parent.mkdir(parents=True, exist_ok=True)
-            probe = job.output.parent / ".audiovttforge-write-test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink()
+            probe_output_directory(job.output)
         except OSError as exc:
+            write_diagnostic(f"probe_error {exc!r}")
             messagebox.showerror(
                 "输出目录不可写",
-                f"无法写入输出目录：{job.output.parent}\n请点击“选择”改用可写目录。临时文件只会写入输出目录旁的隐藏工作目录。\n{exc}",
+                f"无法写入输出目录：{job.output.parent}\n"
+                f"请点击“选择”改用可写目录。临时文件只会写入输出目录旁的隐藏工作目录。\n{exc}",
             )
             return
         self.save()
