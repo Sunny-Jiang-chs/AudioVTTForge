@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("onefile", "onedir")][string]$Mode = "onefile",
+    [ValidateSet("onedir", "onefile")][string]$Mode = "onedir",
     [string]$Python = "python"
 )
 $ErrorActionPreference = "Stop"
@@ -8,8 +8,8 @@ $dist = Join-Path $root "dist"
 $build = Join-Path $root "build"
 $entry = Join-Path $root "audio_vtt_to_mp4_gui.py"
 
-# 预检：onefile 依赖 %TEMP% 解包运行库，TEMP 不存在或不可写时 exe 会弹
-# "Could not create temporary directory!" 且无法启动。
+# 预检：onefile（单文件）依赖 %TEMP% 解包运行库，TEMP 不存在或不可写时 exe 会弹
+# "Could not create temporary directory!" 且无法启动；onedir 不受影响。
 $tmp = $env:TEMP
 if ([string]::IsNullOrWhiteSpace($tmp) -or -not (Test-Path $tmp)) {
     Write-Warning "TEMP 无效：'$tmp'。onefile 构建的 exe 将无法启动，请先运行 diagnose-temp.bat"
@@ -29,7 +29,12 @@ $common = @(
     "--noconfirm", "--clean",
     "--name", "AudioVTTForge",
     "--distpath", $dist,
-    "--workpath", $build
+    "--workpath", $build,
+    # hooks/hook-tkinter.py：完整替代内置 hook，显式收集 Anaconda Library\bin 下的
+    # tcl/tk DLL + Tcl/Tk 数据目录，否则打出的包启动即
+    # ImportError: DLL load failed while importing _tkinter
+    "--additional-hooks-dir", (Join-Path $root "hooks"),
+    "--runtime-hook", (Join-Path $root "hooks\rthook-tkinter-dll.py")
 )
 if ($Mode -eq "onedir") {
     # 目录版不释放到 %TEMP%，启动更稳，也更容易被 SmartScreen 放行

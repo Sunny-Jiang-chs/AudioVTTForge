@@ -42,11 +42,31 @@ python .\audio_vtt_to_mp4_gui.py
 .\build.ps1
 ```
 
-构建完成后，EXE 位于：
+默认构建 **目录版（onedir）**，产物为：
 
 ```text
-dist\AudioVTTForge.exe
+dist\AudioVTTForge\AudioVTTForge.exe
 ```
+
+目录版启动时不需要把运行库解包到 `%TEMP%`，启动更稳，也不容易被 SmartScreen 拦。
+
+如需单文件版（便于拷贝分发）：
+
+```powershell
+.\build.ps1 -Mode onefile
+```
+
+产物为 `dist\AudioVTTForge.exe`。**注意**：单文件版每次启动都要把运行库解包到 `%TEMP%`，
+一旦 `%TEMP%` 不存在或不可写，就会弹出 `Could not create temporary directory!` 并直接退出。
+遇到这种情况先运行 `diagnose-temp.bat` 自检，或改用目录版。
+
+### 关于 Tcl/Tk（Anaconda 环境）
+
+本机 Python 来自 Anaconda，`tcl86t.dll` / `tk86t.dll` 位于 `<Anaconda>\Library\bin`，
+该目录通常不在 `PATH` 中，PyInstaller 默认收集不到，打出的包启动会报
+`ImportError: DLL load failed while importing _tkinter`。
+`hooks\hook-tkinter.py` 完整替代了 PyInstaller 内置的 tkinter hook，显式收集这些 DLL
+和 Tcl/Tk 数据目录；`build.ps1` 会自动带上它，不要删除该目录。
 
 ## 输入文件命名
 
