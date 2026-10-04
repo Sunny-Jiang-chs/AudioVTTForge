@@ -1,51 +1,133 @@
 param(
     [ValidateSet("onedir", "onefile")][string]$Mode = "onedir",
-    [string]$Python = "python"
+    [string]$Python = "python",
+    [int]$ReplaceRetries = 10
 )
+
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $dist = Join-Path $root "dist"
 $build = Join-Path $root "build"
+$staging = Join-Path $dist (".AudioVTTForge-build-" + [guid]::NewGuid().ToString("N"))
 $entry = Join-Path $root "audio_vtt_to_mp4_gui.py"
+$hooks = Join-Path $root "hooks"
+$runtimeHook = Join-Path $hooks "rthook-tkinter-dll.py"
 
-# 预检：onefile（单文件）依赖 %TEMP% 解包运行库，TEMP 不存在或不可写时 exe 会弹
-# "Could not create temporary directory!" 且无法启动；onedir 不受影响。
-$tmp = $env:TEMP
-if ([string]::IsNullOrWhiteSpace($tmp) -or -not (Test-Path $tmp)) {
-    Write-Warning "TEMP 无效：'$tmp'。onefile 构建的 exe 将无法启动，请先运行 diagnose-temp.bat"
-} else {
-    $probe = Join-Path $tmp ("_avf_probe_" + [guid]::NewGuid().ToString("N"))
+if ($ReplaceRetries -lt 1) {
+    throw "ReplaceRetries must be at least 1."
+}
+
+if ($Mode -eq "onefile") {
+    $tmp = [System.IO.Path]::GetTempPath()
     try {
-        New-Item -ItemType Directory -Path $probe -ErrorAction Stop | Out-Null
-        Remove-Item $probe -Recurse -Force
+        $probe = Join-Path $tmp ("_avf_probe_" + [guid]::NewGuid().ToString("N"))
+        [System.IO.Directory]::CreateDirectory($probe) | Out-Null
+        [System.IO.Directory]::Delete($probe, $true)
     } catch {
-        Write-Warning "TEMP 不可写：$tmp。onefile 构建的 exe 将无法启动，请先运行 diagnose-temp.bat"
+        Write-Warning "TEMP is unavailable or not writable ($tmp). The onefile executable may fail to start; use the default onedir build."
     }
 }
 
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
-$common = @(
-    "--noconfirm", "--clean",
-    "--name", "AudioVTTForge",
-    "--distpath", $dist,
-    "--workpath", $build,
-    # hooks/hook-tkinter.py：完整替代内置 hook，显式收集 Anaconda Library\bin 下的
-    # tcl/tk DLL + Tcl/Tk 数据目录，否则打出的包启动即
-    # ImportError: DLL load failed while importing _tkinter
-    "--additional-hooks-dir", (Join-Path $root "hooks"),
-    "--runtime-hook", (Join-Path $root "hooks\rthook-tkinter-dll.py")
-)
-if ($Mode -eq "onedir") {
-    # 目录版不释放到 %TEMP%，启动更稳，也更容易被 SmartScreen 放行
-    & $Python -m PyInstaller @common --onedir --windowed $entry
-} else {
-    & $Python -m PyInstaller @common --onefile --windowed $entry
-}
-if ($LASTEXITCODE -ne 0) { throw "EXE build failed" }
+try {
+    $common = @(
+        "--noconfirm",
+        "--clean",
+        "--name", "AudioVTTForge",
+        "--distpath", $staging,
+        "--workpath", $build,
+        "--additional-hooks-dir", $hooks,
+        "--runtime-hook", $runtimeHook
+    )
+    if ($Mode -eq "onedir") {
+        & $Python -m PyInstaller @common --onedir --windowed $entry
+    } else {
+        & $Python -m PyInstaller @common --onefile --windowed $entry
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "EXE build failed during PyInstaller."
+    }
 
-if ($Mode -eq "onedir") {
-    Write-Output "EXE: $(Join-Path $dist 'AudioVTTForge\AudioVTTForge.exe')"
-} else {
-    Write-Output "EXE: $(Join-Path $dist 'AudioVTTForge.exe')"
+    if ($Mode -eq "onefile") {
+        $built = Join-Path $staging "AudioVTTForge.exe"
+        $target = Join-Path $dist "AudioVTTForge.exe"
+        if (-not (Test-Path -LiteralPath $built -PathType Leaf)) {
+            throw "PyInstaller completed without creating $built."
+        }
+
+        $replaced = $false
+        $lastError = $null
+        for ($attempt = 1; $attempt -le $ReplaceRetries; $attempt++) {
+            try {
+                if (Test-Path -LiteralPath $target -PathType Leaf) {
+                    [System.IO.File]::Delete($target)
+                }
+                Move-Item -LiteralPath $built -Destination $target -Force -ErrorAction Stop
+                $replaced = $true
+                break
+            } catch {
+                $lastError = $_
+                if ($attempt -lt $ReplaceRetries) {
+                    Start-Sleep -Milliseconds ([Math]::Min(3000, 250 * $attempt))
+                }
+            }
+        }
+
+        if (-not $replaced) {
+            $fallback = Join-Path $dist ("AudioVTTForge.new-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".exe")
+            Copy-Item -LiteralPath $built -Destination $fallback -Force
+            throw "Could not replace $target after $ReplaceRetries attempts. The new EXE was saved to $fallback. Close the running app and retry. Last error: $($lastError.Exception.Message)"
+        }
+        Write-Output "EXE: $target"
+    } else {
+        $built = Join-Path $staging "AudioVTTForge"
+        $target = Join-Path $dist "AudioVTTForge"
+        if (-not (Test-Path -LiteralPath $built -PathType Container)) {
+            throw "PyInstaller completed without creating $built."
+        }
+
+        $replaced = $false
+        $lastError = $null
+        for ($attempt = 1; $attempt -le $ReplaceRetries; $attempt++) {
+            $backup = Join-Path $dist (".AudioVTTForge-old-" + [guid]::NewGuid().ToString("N"))
+            $backedUp = $false
+            try {
+                if (Test-Path -LiteralPath $target -PathType Container) {
+                    [System.IO.Directory]::Move($target, $backup)
+                    $backedUp = $true
+                }
+                [System.IO.Directory]::Move($built, $target)
+                $replaced = $true
+                if ($backedUp) {
+                    try {
+                        [System.IO.Directory]::Delete($backup, $true)
+                    } catch {
+                        Write-Warning "New build is ready; old build backup remains at ${backup}: $($_.Exception.Message)"
+                    }
+                }
+                break
+            } catch {
+                $lastError = $_
+                if ($backedUp -and -not (Test-Path -LiteralPath $target) -and (Test-Path -LiteralPath $backup)) {
+                    [System.IO.Directory]::Move($backup, $target)
+                }
+                if ($attempt -lt $ReplaceRetries) {
+                    Start-Sleep -Milliseconds ([Math]::Min(3000, 250 * $attempt))
+                }
+            }
+        }
+
+        if (-not $replaced) {
+            $fallback = Join-Path $dist ("AudioVTTForge.new-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+            Copy-Item -LiteralPath $built -Destination $fallback -Recurse -Force
+            throw "Could not replace $target after $ReplaceRetries attempts. The new build was saved to $fallback. Close the running app and retry. Last error: $($lastError.Exception.Message)"
+        }
+        Write-Output "EXE: $(Join-Path $target 'AudioVTTForge.exe')"
+    }
+} finally {
+    if (Test-Path -LiteralPath $staging -PathType Container) {
+        [System.IO.Directory]::Delete($staging, $true)
+    }
 }
