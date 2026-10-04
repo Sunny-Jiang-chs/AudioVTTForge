@@ -1,10 +1,11 @@
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
-from audiovttforge.engine import EngineError, RenderEngine, validate_job
+from audiovttforge.engine import EngineError, RenderEngine, _tool_environment, validate_job
 from audiovttforge.job import JobSpec
 
 
@@ -105,6 +106,18 @@ def test_merge_preserves_all_streams() -> None:
 
     assert command[command.index("-map") + 1] == "0"
     assert command.index("-map") < command.index("-c")
+
+
+def test_tool_environment_prepends_neighbor_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = tmp_path / "bin" / "ffmpeg.exe"
+    tool.parent.mkdir()
+    monkeypatch.setenv("PATH", "existing-entry")
+
+    environment = _tool_environment(tool)
+
+    entries = environment["PATH"].split(os.pathsep)
+    assert entries[0] == str(tool.parent.resolve())
+    assert entries[1:] == ["existing-entry"]
 
 
 def test_merge_existing_uses_numbered_segments_in_order(tmp_path: Path) -> None:
