@@ -423,7 +423,13 @@ class RenderEngine:
         errors = validate_job(job)
         if errors:
             raise ValidationError("\n".join(errors))
-        job.output.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            job.output.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise EngineError(
+                f"Output directory is not writable: {job.output.parent}. "
+                "Choose a user-writable folder such as Videos\\AudioVTTForge."
+            ) from exc
         work = job.output.parent / f".{job.output.stem}_parallel_work"
         work.mkdir(parents=True, exist_ok=True)
         events_path = job.output.parent / f".{job.output.stem}.events.jsonl"

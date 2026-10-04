@@ -32,6 +32,12 @@ CONFIG = (
 AUTO_ASSIGNMENT_PREFIX = "自动: "
 
 
+def default_output_path(audio: Path) -> Path:
+    """Use a user-writable output folder instead of the packaged app folder."""
+    videos = Path(os.environ.get("USERPROFILE", Path.home())) / "Videos" / "AudioVTTForge"
+    return videos / f"{audio.stem}_merged.mp4"
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -405,9 +411,7 @@ class App:
                 self.audio.append(path)
         self._refresh()
         if self.audio and not self.output.get():
-            self.output.set(
-                str(self.audio[0].with_name(self.audio[0].stem + "_merged.mp4"))
-            )
+            self.output.set(str(default_output_path(self.audio[0])))
         self.save()
 
     def add_images(self) -> None:
@@ -477,9 +481,7 @@ class App:
             if key in data:
                 variable.set(str(data[key]))
         if self.audio and not self.output.get():
-            self.output.set(
-                str(self.audio[0].with_name(self.audio[0].stem + "_merged.mp4"))
-            )
+            self.output.set(str(default_output_path(self.audio[0])))
 
     def save(self) -> None:
         try:
@@ -552,6 +554,17 @@ class App:
         errors = validate_job(job)
         if errors:
             messagebox.showerror("无法开始", "\n".join(errors))
+            return
+        try:
+            job.output.parent.mkdir(parents=True, exist_ok=True)
+            probe = job.output.parent / ".audiovttforge-write-test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            messagebox.showerror(
+                "输出目录不可写",
+                f"无法写入输出目录：{job.output.parent}\n请改用用户目录（例如“视频\\AudioVTTForge”）。\n{exc}",
+            )
             return
         self.save()
         self.running = True
