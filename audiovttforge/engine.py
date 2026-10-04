@@ -47,6 +47,28 @@ def _tool_available(tool: Path) -> bool:
     return tool.is_file() or shutil.which(str(tool)) is not None
 
 
+def _tool_environment(tool: Path) -> dict[str, str]:
+    """Return a child environment that can load a tool's neighboring DLLs.
+
+    Windows does not always retain the directory containing FFmpeg's optional
+    DLLs in ``PATH`` (notably when the GUI is launched from Explorer or a
+    packaged application).  The executable can still be found by its absolute
+    path while a child process fails to load one of those DLLs.  Prepending the
+    tool directory keeps the headless engine and the GUI on the same reliable
+    process setup.
+    """
+    environment = os.environ.copy()
+    try:
+        tool_directory = str(tool.expanduser().resolve().parent)
+    except OSError:
+        tool_directory = str(tool.parent)
+    current_path = environment.get("PATH", "")
+    path_entries = current_path.split(os.pathsep) if current_path else []
+    if tool_directory not in path_entries:
+        environment["PATH"] = os.pathsep.join([tool_directory, *path_entries])
+    return environment
+
+
 def _event(event_type: str, **payload: Any) -> dict[str, Any]:
     return {
         "type": event_type,
@@ -251,6 +273,7 @@ class RenderEngine:
                 errors="replace",
                 check=True,
                 cwd=str(job.ffprobe.parent) if job.ffprobe.parent != Path(".") else None,
+                env=_tool_environment(job.ffprobe),
             )
             data = json.loads(result.stdout)
             duration = float(data["streams"][0]["duration"])
@@ -296,6 +319,7 @@ class RenderEngine:
                     encoding="utf-8",
                     errors="replace",
                     cwd=str(job.ffmpeg.parent) if job.ffmpeg.parent != Path(".") else None,
+                    env=_tool_environment(job.ffmpeg),
                 )
                 assert process.stdout is not None
                 for line in process.stdout:
@@ -344,6 +368,7 @@ class RenderEngine:
                     stderr=subprocess.STDOUT,
                     check=False,
                     cwd=str(ffmpeg.parent) if ffmpeg.parent != Path(".") else None,
+                    env=_tool_environment(ffmpeg),
                 )
         except OSError as exc:
             raise EngineError(f"Could not start merge process; see {log_path}") from exc
@@ -490,6 +515,7 @@ def inspect_tool(tool: Path) -> dict[str, Any]:
             errors="replace",
             timeout=5,
             check=False,
+            env=_tool_environment(tool),
         )
         first_line = (result.stdout or result.stderr).splitlines()
         report["version"] = first_line[0] if first_line else ""

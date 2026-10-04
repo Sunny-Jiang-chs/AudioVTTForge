@@ -107,6 +107,32 @@ def test_merge_preserves_all_streams() -> None:
     assert command.index("-map") < command.index("-c")
 
 
+def test_merge_existing_uses_numbered_segments_in_order(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    work = tmp_path / ".result_parallel_work"
+    work.mkdir()
+    (work / "0001.mp4").write_bytes(b"second")
+    (work / "0000.mp4").write_bytes(b"first")
+    (work / "notes.mp4").write_bytes(b"ignored")
+
+    output = tmp_path / "recovered.mp4"
+    result = RenderEngine().merge_existing(work, output, tool)
+
+    assert result == output
+    assert output.read_bytes() == b"fake mp4"
+    concat = (work / "segments.txt").read_text(encoding="utf-8")
+    assert concat.splitlines() == [
+        f"file '{(work / '0000.mp4').resolve().as_posix()}'",
+        f"file '{(work / '0001.mp4').resolve().as_posix()}'",
+    ]
+    events = [
+        json.loads(line)["type"]
+        for line in (work / "merge_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == ["merge_started", "merge_finished"]
+
+
 def test_embedded_subtitle_runs_with_fake_tools(tmp_path: Path) -> None:
     tool = tmp_path / "fake_tool.py"
     tool.write_text(FAKE_TOOL, encoding="utf-8")
