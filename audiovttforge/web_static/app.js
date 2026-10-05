@@ -34,6 +34,19 @@ function setProgress(value) {
   $("progress-value").textContent = `${Math.round(progress)}%`;
 }
 
+function updateSubtitlePreview() {
+  const fontName = $("font-name").value;
+  const fontSize = Number($("font-size").value) || 42;
+  const fontColor = $("font-color").value;
+  const text = $("subtitle-preview-text").value || "这是字幕样式预览";
+  const preview = $("subtitle-preview");
+  preview.textContent = text;
+  preview.style.fontFamily = `"${fontName}", sans-serif`;
+  preview.style.fontSize = `${fontSize}px`;
+  preview.style.color = fontColor;
+  $("subtitle-preview-meta").textContent = `${fontName} · ${fontSize} px · ${fontColor.toUpperCase()}`;
+}
+
 function showError(message) {
   $("form-error").textContent = message || "";
 }
@@ -389,5 +402,15 @@ sourceInput.addEventListener("keydown", (event) => {
 });
 $("scan-button").addEventListener("click", scanSource);
 $("start-button").addEventListener("click", startJob);
+[
+  "font-name",
+  "font-size",
+  "font-color",
+  "subtitle-preview-text",
+].forEach((id) => {
+  $(id).addEventListener("input", updateSubtitlePreview);
+  $(id).addEventListener("change", updateSubtitlePreview);
+});
+updateSubtitlePreview();
 clearScan();
 checkHealth();
