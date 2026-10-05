@@ -73,6 +73,9 @@ class JobSpec:
     fps: int = 2
     width: int = 1920
     workers: int = 2
+    font_name: str = "Microsoft YaHei"
+    font_size: int = 42
+    font_color: str = "#FFFFFF"
     ffmpeg: Path = DEFAULT_FFMPEG
     ffprobe: Path = DEFAULT_FFPROBE
 
@@ -108,6 +111,9 @@ class JobSpec:
             fps=int(data.get("fps", 2)),
             width=int(data.get("width", 1920)),
             workers=int(data.get("workers", 2)),
+            font_name=str(data.get("font_name", "Microsoft YaHei")),
+            font_size=int(data.get("font_size", 42)),
+            font_color=str(data.get("font_color", "#FFFFFF")),
             ffmpeg=_resolve_job_tool(
                 data.get("ffmpeg"),
                 root,
@@ -134,6 +140,9 @@ class JobSpec:
             "fps": self.fps,
             "width": self.width,
             "workers": self.workers,
+            "font_name": self.font_name,
+            "font_size": self.font_size,
+            "font_color": self.font_color,
             "ffmpeg": str(self.ffmpeg),
             "ffprobe": str(self.ffprobe),
         }

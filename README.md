@@ -1,6 +1,6 @@
 # AudioVTTForge
 
-AudioVTTForge 是一个运行在 Windows 上的图形化工具，用于将 WAV/MP3 音频、对应的 WebVTT 字幕和图片合成为 MP4 视频。
+AudioVTTForge 是一个运行在 Windows 上的本地媒体渲染工具，用于将 WAV/MP3 音频、对应的 WebVTT 字幕和图片合成为 MP4 视频。项目同时保留 Tk GUI 入口，并提供一个由浏览器调用的本地 REST API 入口。
 
 ## 功能
 
@@ -15,6 +15,7 @@ AudioVTTForge 是一个运行在 Windows 上的图形化工具，用于将 WAV/M
 - 支持保留中间分段，便于中断后继续处理。
 - 支持对已有分段单独执行合并。
 - 自动保存上次使用的音频、图片和处理设置。
+- 浏览器端通过 REST API 提交任务、查看事件进度并下载结果。
 
 ## 环境要求
 
@@ -33,6 +34,45 @@ AudioVTTForge 是一个运行在 Windows 上的图形化工具，用于将 WAV/M
 ```powershell
 python .\audio_vtt_to_mp4_gui.py
 ```
+
+### 浏览器版
+
+浏览器版把 GUI 降为一个只负责调用 REST API 的客户端，媒体处理仍由本机的
+`RenderEngine` 执行。启动本地服务后，用浏览器打开打印出来的地址：
+
+```powershell
+python -m audiovttforge.web --port 8765
+```
+
+Windows 下也可以直接双击项目根目录的 `start_web.bat`。它会启动本地服务并自动打开浏览器；
+服务运行期间请保留弹出的命令窗口，关闭该窗口即可停止服务。
+
+默认只监听 `127.0.0.1`，任务输出保存在本机数据目录中，不会发送到远程服务。
+浏览器版的默认流程是输入素材目录路径并点击“扫描目录”。因为服务和浏览器运行在同一台电脑上，
+服务可以直接读取这个本地目录；扫描结果会在页面内按数字自然顺序展示音频、图片、字幕以及缺失字幕警告。
+确认目录内容后，前端会为每段音频显示图片选择器，默认沿用 GUI 的自动分配规则，也可以手动指定某张图片；
+同时可以选择 1 到 10 个并行进程。前端只提交路径、图片分配和渲染参数，素材本身不会通过浏览器上传。旧的上传接口仍保留，供其他 API
+调用方兼容使用。
+烧录字幕时还可以在输出设置中选择字体、字号和颜色；这些选项会随 REST 请求传入渲染引擎。
+
+核心资源如下：
+
+```text
+GET  /api/v1/health
+GET  /api/v1/capabilities
+POST /api/v1/sources/scan
+POST /api/v1/uploads
+POST /api/v1/jobs
+GET  /api/v1/jobs/{id}
+GET  /api/v1/jobs/{id}/events?after={seq}
+GET  /api/v1/jobs/{id}/download
+```
+
+`POST /api/v1/sources/scan` 接收 `{ "path": "D:\\AudioVTT\\episode01" }`，返回目录内按自然顺序整理的
+音频、图片和字幕清单。随后 `POST /api/v1/jobs` 可以使用 `{ "source_dir": "..." }` 创建任务，返回
+`202 Accepted`；前端通过任务资源和事件资源轮询进度，成功后再通过下载资源取得 MP4。
+浏览器静态文件位于 `audiovttforge/web_static/`，服务端入口位于
+`audiovttforge/web.py`。
 
 核心处理流程也可以完全脱离 GUI 运行。CLI 使用一个 JSON 文件描述任务：
 

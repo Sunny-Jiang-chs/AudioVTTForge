@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -77,6 +78,12 @@ def _event(event_type: str, **payload: Any) -> dict[str, Any]:
     }
 
 
+def _ass_color(value: str) -> str:
+    """Convert a CSS #RRGGBB color to the BGR order used by ASS subtitles."""
+    color = value.lstrip("#")
+    return f"&H00{color[4:6]}{color[2:4]}{color[0:2]}"
+
+
 class EventLog:
     def __init__(self, path: Path, callback: EventSink | None = None) -> None:
         self.path = path
@@ -123,6 +130,14 @@ def validate_job(job: JobSpec, check_tools: bool = True) -> list[str]:
         errors.append("Width must be a positive even number.")
     if job.workers < 1:
         errors.append("Workers must be a positive integer.")
+    if not isinstance(job.font_name, str) or not job.font_name.strip():
+        errors.append("Font name must not be empty.")
+    elif any(character in job.font_name for character in ",':\\\r\n"):
+        errors.append("Font name contains unsupported characters.")
+    if job.font_size < 8 or job.font_size > 144:
+        errors.append("Font size must be between 8 and 144.")
+    if not isinstance(job.font_color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", job.font_color) is None:
+        errors.append("Font color must be a #RRGGBB value.")
     for path in job.audio:
         if not path.is_file():
             errors.append(f"Missing audio file: {path}")
@@ -158,6 +173,9 @@ def plan_job(job: JobSpec) -> dict[str, Any]:
         "output": str(job.output),
         "work": str(job.output.parent / f".{job.output.stem}_parallel_work"),
         "subtitle": job.subtitle,
+        "font_name": job.font_name,
+        "font_size": job.font_size,
+        "font_color": job.font_color,
         "fps": job.fps,
         "video": {"width": width, "height": height},
         "workers": min(job.workers, len(job.audio)) if job.audio else 0,
@@ -200,24 +218,25 @@ class RenderEngine:
             "-i",
             str(audio),
         ]
-        subtitle_path = self._subtitle_path(audio)
-        has_subtitle = subtitle_path.is_file()
-        if job.subtitle == "embedded" and has_subtitle:
-            args += ["-i", str(subtitle_path)]
+        vtt_path = self._subtitle_path(audio)
+        has_vtt = vtt_path.is_file()
+        if job.subtitle == "embedded" and has_vtt:
+            args += ["-i", str(vtt_path)]
         args += [
             "-map",
             "0:v:0",
             "-map",
             "1:a:0",
         ]
-        if job.subtitle == "burnin" and subtitle_path:
+        if job.subtitle == "burnin" and subtitle_path is not None and subtitle_path.is_file():
             escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
             video_filter += (
                 f",subtitles='{escaped}':force_style="
-                "'FontName=Microsoft YaHei,FontSize=42,Outline=2,Shadow=1,"
+                f"'FontName={job.font_name},FontSize={job.font_size},"
+                f"PrimaryColour={_ass_color(job.font_color)},Outline=2,Shadow=1,"
                 "Alignment=2,MarginV=48'"
             )
-        elif job.subtitle == "embedded" and has_subtitle:
+        elif job.subtitle == "embedded" and has_vtt:
             args += ["-map", "2:0"]
         args += [
             "-vf",
@@ -243,7 +262,7 @@ class RenderEngine:
             "-t",
             f"{duration:.3f}",
         ]
-        if job.subtitle == "embedded" and has_subtitle:
+        if job.subtitle == "embedded" and has_vtt:
             args += ["-c:s", "mov_text"]
         args += ["-movflags", "+faststart", str(segment)]
         return _tool_command(job.ffmpeg, args)

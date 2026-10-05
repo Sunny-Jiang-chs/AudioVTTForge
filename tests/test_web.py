@@ -1,0 +1,201 @@
+import json
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from audiovttforge.service import JobManager
+from audiovttforge.web import AudioVTTForgeServer
+
+
+FAKE_TOOL = """\
+import json
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if "-show_entries" in args:
+    print(json.dumps({"streams": [{"duration": "1.250"}]}))
+    raise SystemExit(0)
+output = pathlib.Path(args[-1])
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_bytes(b"fake mp4")
+"""
+
+
+def request_json(url: str, method: str = "GET", payload: dict | None = None) -> dict:
+    body = None
+    headers = {}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def multipart_body(files: list[tuple[str, bytes]]) -> tuple[bytes, str]:
+    boundary = "----AudioVTTForgeTestBoundary"
+    chunks: list[bytes] = []
+    for name, content in files:
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="files"; filename="{name}"\r\n'.encode(),
+                b"Content-Type: application/octet-stream\r\n\r\n",
+                content,
+                b"\r\n",
+            ]
+        )
+    chunks.append(f"--{boundary}--\r\n".encode())
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
+def wait_for_state(url: str, state: str) -> dict:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = request_json(url)
+        if current["state"] == state:
+            return current
+        time.sleep(0.02)
+    raise AssertionError(f"job did not reach {state}")
+
+
+def test_rest_resources_serve_ui_upload_and_job(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert request_json(f"{base_url}/api/v1/health")["status"] == "ok"
+        with urllib.request.urlopen(f"{base_url}/", timeout=5) as response:
+            assert "AudioVTTForge" in response.read().decode("utf-8")
+
+        body, content_type = multipart_body(
+            [("01.wav", b"audio"), ("01.wav.vtt", b"WEBVTT\n"), ("cover.png", b"image")]
+        )
+        upload_request = urllib.request.Request(
+            f"{base_url}/api/v1/uploads",
+            data=body,
+            headers={"Content-Type": content_type},
+            method="POST",
+        )
+        with urllib.request.urlopen(upload_request, timeout=5) as response:
+            uploads = json.loads(response.read().decode("utf-8"))["items"]
+        by_name = {item["name"]: item for item in uploads}
+
+        job = request_json(
+            f"{base_url}/api/v1/jobs",
+            "POST",
+            {
+                "files": [item["id"] for item in uploads],
+                "audio": [by_name["01.wav"]["id"]],
+                "images": [by_name["cover.png"]["id"]],
+                "workers": 1,
+                "ffmpeg": str(tool),
+                "ffprobe": str(tool),
+            },
+        )
+        completed = wait_for_state(f"{base_url}/api/v1/jobs/{job['id']}", "succeeded")
+        assert completed["output_ready"] is True
+        events = request_json(f"{base_url}/api/v1/jobs/{job['id']}/events")
+        assert events["items"][-1]["type"] == "job_finished"
+        with urllib.request.urlopen(f"{base_url}{completed['download_url']}", timeout=5) as response:
+            assert response.read() == b"fake mp4"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_rest_scans_local_source_directory(tmp_path: Path) -> None:
+    source = tmp_path / "episode01"
+    source.mkdir()
+    (source / "10.wav").write_bytes(b"audio")
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "01.wav.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    (source / "cover.png").write_bytes(b"image")
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        scan = request_json(
+            f"http://127.0.0.1:{server.server_port}/api/v1/sources/scan",
+            "POST",
+            {"path": str(source)},
+        )
+        assert [item["name"] for item in scan["audio"]] == ["01.wav", "10.wav"]
+        assert scan["audio"][0]["subtitle"] == "01.wav.vtt"
+        assert "缺少字幕：10.wav.vtt" in scan["warnings"]
+        assert scan["ready"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_rest_rejects_non_json_job_body(tmp_path: Path) -> None:
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/v1/jobs",
+            data=b"{}",
+            headers={"Content-Type": "text/plain"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 415
+        else:
+            raise AssertionError("request should fail with 415")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_rest_returns_validation_error_for_invalid_job(tmp_path: Path) -> None:
+    manager = JobManager(tmp_path / "data")
+    upload = manager.upload("01.wav", b"audio")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/v1/jobs",
+            data=json.dumps(
+                {
+                    "files": [upload.upload_id],
+                    "audio": [upload.upload_id],
+                    "assignments": "not-an-array",
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 422
+            payload = json.loads(exc.read().decode("utf-8"))
+            assert payload["error"]["status"] == 422
+            assert "assignments" in payload["error"]["message"]
+        else:
+            raise AssertionError("request should fail with 422")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
