@@ -4,6 +4,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlencode
 
 from audiovttforge.service import JobManager
 from audiovttforge.web import AudioVTTForgeServer
@@ -21,6 +22,23 @@ if "-show_entries" in args:
 output = pathlib.Path(args[-1])
 output.parent.mkdir(parents=True, exist_ok=True)
 output.write_bytes(b"fake mp4")
+"""
+
+SLOW_TOOL = """\
+import json
+import pathlib
+import sys
+import time
+
+args = sys.argv[1:]
+if "-show_entries" in args:
+    print(json.dumps({"streams": [{"duration": "1.250"}]}))
+    raise SystemExit(0)
+output = pathlib.Path(args[-1])
+output.parent.mkdir(parents=True, exist_ok=True)
+output.with_suffix(".started").write_text("started")
+while True:
+    time.sleep(1)
 """
 
 
@@ -139,6 +157,83 @@ def test_rest_scans_local_source_directory(tmp_path: Path) -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_rest_serves_only_images_found_in_scanned_source_directory(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    image = source / "cover.png"
+    image.write_bytes(b"png preview bytes")
+    (source / "notes.txt").write_text("not an image", encoding="utf-8")
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        query = urlencode({"directory": str(source), "name": image.name})
+        with urllib.request.urlopen(f"{base_url}/api/v1/sources/image?{query}", timeout=5) as response:
+            assert response.headers.get_content_type() == "image/png"
+            assert response.read() == image.read_bytes()
+
+        query = urlencode({"directory": str(source), "name": "notes.txt"})
+        try:
+            urllib.request.urlopen(f"{base_url}/api/v1/sources/image?{query}", timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            raise AssertionError("non-image files must not be served by the preview route")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_rest_delete_cancels_running_job_and_cleans_temporary_files(tmp_path: Path) -> None:
+    tool = tmp_path / "slow_tool.py"
+    tool.write_text(SLOW_TOOL, encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "cover.png").write_bytes(b"image")
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        job = request_json(
+            f"{base_url}/api/v1/jobs",
+            "POST",
+            {
+                "source_dir": str(source),
+                "workers": 1,
+                "ffmpeg": str(tool),
+                "ffprobe": str(tool),
+            },
+        )
+        record = manager.get(job["id"])
+        work = record.job.output.parent / f".{record.job.output.stem}_parallel_work"
+        started = work / "0000.started"
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not started.exists():
+            time.sleep(0.02)
+        assert started.is_file(), "fake FFmpeg did not start"
+
+        cancelled = request_json(f"{base_url}/api/v1/jobs/{job['id']}", "DELETE")
+
+        assert cancelled["state"] == "cancelled"
+        assert cancelled["cancelable"] is False
+        assert not record.root.exists()
+        assert (source / "01.wav").is_file()
+        assert (source / "cover.png").is_file()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        manager.shutdown()
 
 
 def test_rest_rejects_non_json_job_body(tmp_path: Path) -> None:

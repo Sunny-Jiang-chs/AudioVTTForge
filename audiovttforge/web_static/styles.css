@@ -125,9 +125,14 @@ code { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, C
 .subtitle-preview-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .subtitle-preview-heading strong { color: var(--muted-strong); font-size: 12px; }
 .subtitle-preview-meta { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.preview-image-field { gap: 5px; }
 .preview-text-field { gap: 5px; }
-.subtitle-preview-stage { display: flex; min-height: 108px; align-items: flex-end; justify-content: center; overflow: hidden; padding: 16px 12px; border: 1px solid #303b46; border-radius: 5px; background: #06080a; text-align: center; }
-#subtitle-preview { max-width: 100%; color: #fff; font-weight: 500; line-height: 1.2; overflow-wrap: anywhere; text-shadow: 0 2px 0 #000, 0 0 4px #000; }
+.subtitle-preview-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid #303b46; border-radius: 5px; background: #06080a; }
+#subtitle-preview-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+#subtitle-preview-image[hidden] { display: none; }
+.subtitle-preview-placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; color: var(--muted); font-size: 11px; text-align: center; }
+.subtitle-preview-placeholder[hidden] { display: none; }
+#subtitle-preview { position: absolute; z-index: 1; right: 4%; bottom: 4.44%; left: 4%; color: #fff; font-weight: 500; line-height: 1.2; overflow-wrap: anywhere; text-align: center; }
 .subtitle-preview-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .settings-summary { display: grid; gap: 9px; padding: 16px 24px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-soft); }
 .settings-summary div { display: flex; justify-content: space-between; gap: 15px; color: var(--muted); font-size: 11px; }
@@ -140,10 +145,15 @@ code { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, C
 
 .job-panel { margin-top: 20px; }
 .job-heading { padding-bottom: 14px; }
+.job-heading-actions { display: flex; align-items: center; gap: 9px; }
 .job-state { padding: 5px 9px; border: 1px solid var(--line-light); border-radius: 999px; }
 .job-state[data-state="running"] { color: var(--accent-strong); border-color: #3b7769; background: #142a25; }
 .job-state[data-state="succeeded"] { color: var(--accent-strong); border-color: #3b7769; background: #142a25; }
 .job-state[data-state="failed"] { color: var(--danger); border-color: #774747; background: #2a1818; }
+.job-state[data-state="cancelled"] { color: var(--muted-strong); border-color: var(--line-light); background: var(--surface-soft); }
+.cancel-button { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 0 10px; border: 1px solid #774747; border-radius: 5px; color: #f09a91; background: #2a1818; font-size: 11px; font-weight: 700; }
+.cancel-button:disabled { cursor: wait; opacity: .6; }
+.cancel-button[hidden] { display: none; }
 .progress-row { gap: 13px; padding: 0 24px; }
 .progress-track { flex: 1; height: 8px; overflow: hidden; border-radius: 5px; background: #293541; }
 .progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--accent); transition: width .25s ease; }

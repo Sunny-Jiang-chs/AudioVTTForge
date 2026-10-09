@@ -154,7 +154,13 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             self._serve_static(path.removeprefix("/assets/") if path.startswith("/assets/") else "index.html")
             return
         parts = [unquote(part) for part in path.split("/") if part]
-        if parts[:3] != ["api", "v1", "health"] and parts[:3] != ["api", "v1", "capabilities"] and parts[:3] != ["api", "v1", "jobs"]:
+        api_roots = (
+            ["api", "v1", "health"],
+            ["api", "v1", "capabilities"],
+            ["api", "v1", "jobs"],
+            ["api", "v1", "sources"],
+        )
+        if parts[:3] not in api_roots:
             raise HttpRequestError(404, "Resource not found")
         if parts[:3] == ["api", "v1", "health"] and len(parts) == 3:
             self._send_json({"status": "ok", "service": "AudioVTTForge", "api_version": "v1"})
@@ -175,6 +181,16 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
                     "upload_kinds": {"audio": sorted(self.manager.uploads.AUDIO_EXTENSIONS), "image": sorted(self.manager.uploads.IMAGE_EXTENSIONS), "subtitle": [".vtt"]},
                 }
             )
+            return
+        if parts[:3] == ["api", "v1", "sources"] and len(parts) == 4 and parts[3] == "image":
+            query = parse_qs(parsed.query)
+            source_dir = query.get("directory", [""])[0]
+            name = query.get("name", [""])[0]
+            if not source_dir or not name:
+                raise HttpRequestError(400, "'directory' and 'name' are required")
+            image = self.manager.source_image(source_dir, name)
+            content_type = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
+            self._send_bytes(image.read_bytes(), content_type)
             return
         if len(parts) < 4:
             raise HttpRequestError(404, "Resource not found")
@@ -224,6 +240,12 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             return
         raise HttpRequestError(404, "Resource not found")
 
+    def _handle_delete(self) -> None:
+        parts = [unquote(part) for part in urlsplit(self.path).path.split("/") if part]
+        if parts[:3] != ["api", "v1", "jobs"] or len(parts) != 4:
+            raise HttpRequestError(404, "Resource not found")
+        self._send_json(self.manager.cancel(parts[3]).to_dict())
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         try:
             self._handle_get()
@@ -231,6 +253,8 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             self._send_error(exc.status, exc.message, exc.details)
         except NotFoundError as exc:
             self._send_error(404, str(exc))
+        except RequestValidationError as exc:
+            self._send_error(422, str(exc), exc.details)
         except ServiceError as exc:
             self._send_error(409, str(exc))
         except OSError as exc:
@@ -249,6 +273,18 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             self._send_error(409, str(exc))
         except OSError as exc:
             self._send_error(500, f"Could not store resource: {exc}")
+
+    def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler API
+        try:
+            self._handle_delete()
+        except HttpRequestError as exc:
+            self._send_error(exc.status, exc.message, exc.details)
+        except NotFoundError as exc:
+            self._send_error(404, str(exc))
+        except ServiceError as exc:
+            self._send_error(409, str(exc))
+        except OSError as exc:
+            self._send_error(500, f"Could not clean up cancelled job: {exc}")
 
 
 def create_server(

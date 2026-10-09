@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,10 @@ class EngineError(RuntimeError):
 
 class ValidationError(EngineError):
     """Raised when a job cannot be started."""
+
+
+class JobCancelled(EngineError):
+    """Raised when a render job is cancelled by its owner."""
 
 
 @dataclass(frozen=True)
@@ -184,8 +189,23 @@ def plan_job(job: JobSpec) -> dict[str, Any]:
 
 
 class RenderEngine:
-    def __init__(self, callback: EventSink | None = None) -> None:
+    def __init__(
+        self,
+        callback: EventSink | None = None,
+        cancel_event: threading.Event | None = None,
+        process_callback: Callable[[subprocess.Popen[Any], bool], None] | None = None,
+    ) -> None:
         self.callback = callback
+        self.cancel_event = cancel_event or threading.Event()
+        self.process_callback = process_callback
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_event.is_set():
+            raise JobCancelled("Render job was cancelled")
+
+    def _track_process(self, process: subprocess.Popen[Any], active: bool) -> None:
+        if self.process_callback:
+            self.process_callback(process, active)
 
     def _render_command(
         self,
@@ -272,6 +292,7 @@ class RenderEngine:
         return audio.with_name(audio.name + ".vtt")
 
     def _probe(self, job: JobSpec, audio: Path, events: EventLog) -> float:
+        self._check_cancelled()
         args = _tool_command(
             job.ffprobe,
             [
@@ -287,26 +308,33 @@ class RenderEngine:
             ],
         )
         events.emit("probe_started", audio=str(audio), command=args)
+        process: subprocess.Popen[str] | None = None
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 args,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                check=True,
                 cwd=str(job.ffprobe.parent) if job.ffprobe.parent != Path(".") else None,
                 env=_tool_environment(job.ffprobe),
             )
-            data = json.loads(result.stdout)
+            self._track_process(process, True)
+            stdout, stderr = process.communicate()
+            self._check_cancelled()
+            if process.returncode != 0:
+                raise EngineError(f"FFprobe failed for {audio}: {(stderr or stdout).strip()}")
+            data = json.loads(stdout)
             duration = float(data["streams"][0]["duration"])
             if not math.isfinite(duration) or duration <= 0:
                 raise ValueError("duration is not positive and finite")
-        except subprocess.CalledProcessError as exc:
-            details = exc.stderr or exc.stdout or str(exc)
-            raise EngineError(f"FFprobe failed for {audio}: {details.strip()}") from exc
         except (OSError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._check_cancelled()
             raise EngineError(f"FFprobe failed for {audio}: {exc}") from exc
+        finally:
+            if process is not None:
+                self._track_process(process, False)
         events.emit("probe_finished", audio=str(audio), duration=duration)
         return duration
 
@@ -319,6 +347,7 @@ class RenderEngine:
         events: EventLog,
         resume: bool,
     ) -> Path:
+        self._check_cancelled()
         audio = job.audio[index]
         segment = work / f"{index:04d}.mp4"
         if resume and segment.is_file() and segment.stat().st_size > 0:
@@ -343,6 +372,7 @@ class RenderEngine:
         events.emit("task_started", index=index, audio=str(audio), command=command)
         try:
             with log_path.open("w", encoding="utf-8") as log:
+                self._check_cancelled()
                 process = subprocess.Popen(
                     command,
                     stdout=subprocess.PIPE,
@@ -353,20 +383,26 @@ class RenderEngine:
                     cwd=str(job.ffmpeg.parent) if job.ffmpeg.parent != Path(".") else None,
                     env=_tool_environment(job.ffmpeg),
                 )
-                assert process.stdout is not None
-                for line in process.stdout:
-                    log.write(line)
-                    line = line.strip()
-                    if line:
-                        events.emit(
-                            "task_progress",
-                            index=index,
-                            audio=str(audio),
-                            progress=line[-160:],
-                        )
-                return_code = process.wait()
+                self._track_process(process, True)
+                try:
+                    assert process.stdout is not None
+                    for line in process.stdout:
+                        log.write(line)
+                        line = line.strip()
+                        if line:
+                            events.emit(
+                                "task_progress",
+                                index=index,
+                                audio=str(audio),
+                                progress=line[-160:],
+                            )
+                    return_code = process.wait()
+                finally:
+                    self._track_process(process, False)
         except OSError as exc:
+            self._check_cancelled()
             raise EngineError(f"Could not start FFmpeg for {audio}: {exc}") from exc
+        self._check_cancelled()
         if return_code != 0:
             raise EngineError(f"FFmpeg failed for {audio}; see {log_path}")
         if not segment.is_file():
@@ -383,6 +419,7 @@ class RenderEngine:
         events: EventLog,
         log_name: str = "join.log",
     ) -> None:
+        self._check_cancelled()
         concat = work / "segments.txt"
         concat.write_text(
             "\n".join(f"file '{path.resolve().as_posix()}'" for path in segments) + "\n",
@@ -392,19 +429,26 @@ class RenderEngine:
         log_path = work / log_name
         command = self._merge_command(ffmpeg, concat, merge_output)
         events.emit("merge_started", command=command, output=str(output))
+        process: subprocess.Popen[Any] | None = None
         try:
             with log_path.open("w", encoding="utf-8") as log:
-                result = subprocess.run(
+                process = subprocess.Popen(
                     command,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    check=False,
                     cwd=str(ffmpeg.parent) if ffmpeg.parent != Path(".") else None,
                     env=_tool_environment(ffmpeg),
                 )
+                self._track_process(process, True)
+                try:
+                    return_code = process.wait()
+                finally:
+                    self._track_process(process, False)
         except OSError as exc:
+            self._check_cancelled()
             raise EngineError(f"Could not start merge process; see {log_path}") from exc
-        if result.returncode != 0:
+        self._check_cancelled()
+        if return_code != 0:
             details = log_path.read_text(encoding="utf-8", errors="replace").strip()
             raise EngineError(f"Merge failed; see {log_path}\n{details[-2000:]}")
         if not merge_output.is_file():
@@ -443,6 +487,7 @@ class RenderEngine:
         )
 
     def run(self, job: JobSpec, keep_work: bool = False, resume: bool = False) -> RunResult:
+        self._check_cancelled()
         errors = validate_job(job)
         if errors:
             raise ValidationError("\n".join(errors))
@@ -498,6 +543,7 @@ class RenderEngine:
                         }
                         completed = 0
                         for future in as_completed(futures):
+                            self._check_cancelled()
                             index = futures[future]
                             segments[index] = future.result()
                             completed += 1
@@ -508,8 +554,13 @@ class RenderEngine:
                                 total=len(segments),
                             )
                     self._merge(job.ffmpeg, segments, work, job.output, events)
+                    self._check_cancelled()
                     events.emit("job_finished", output=str(job.output))
                     result_data.update({"success": True, "segments": [str(path) for path in segments]})
+                except JobCancelled as exc:
+                    result_data.update({"error": str(exc), "segments": [str(path) for path in segments]})
+                    events.emit("job_cancelled", output=str(job.output), work=str(work))
+                    raise
                 except Exception as exc:
                     result_data.update({"error": str(exc), "segments": [str(path) for path in segments]})
                     events.emit("job_failed", error=str(exc), work=str(work))

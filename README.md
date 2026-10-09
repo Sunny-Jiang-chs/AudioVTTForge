@@ -62,16 +62,22 @@ Windows 下也可以直接双击项目根目录的 `start_web.bat`。它会启�
 GET  /api/v1/health
 GET  /api/v1/capabilities
 POST /api/v1/sources/scan
+GET  /api/v1/sources/image?directory={path}&name={filename}
 POST /api/v1/uploads
 POST /api/v1/jobs
 GET  /api/v1/jobs/{id}
 GET  /api/v1/jobs/{id}/events?after={seq}
 GET  /api/v1/jobs/{id}/download
+DELETE /api/v1/jobs/{id}
 ```
 
 `POST /api/v1/sources/scan` 接收 `{ "path": "D:\\AudioVTT\\episode01" }`，返回目录内按自然顺序整理的
 音频、图片和字幕清单。随后 `POST /api/v1/jobs` 可以使用 `{ "source_dir": "..." }` 创建任务，返回
 `202 Accepted`；前端通过任务资源和事件资源轮询进度，成功后再通过下载资源取得 MP4。
+预览图片资源只提供指定素材目录中已扫描到的图片，供网页进行画面与字幕叠加预览。
+扫描目录时，默认输出名取完整目录路径中最长的目录名片段并添加 `.mp4`；用户可以在渲染前修改。
+渲染开始后可调用 `DELETE /api/v1/jobs/{id}` 取消任务。服务会结束正在运行的 FFmpeg/FFprobe 进程，
+清理本次任务目录，并保留原素材目录；网页中的路径、参数和图片分配也会保留，便于调整后重新提交。
 浏览器静态文件位于 `audiovttforge/web_static/`，服务端入口位于
 `audiovttforge/web.py`。
 

@@ -178,17 +178,24 @@
 
           <div class="subtitle-preview-block" aria-labelledby="subtitle-preview-title">
             <div class="subtitle-preview-heading">
-              <strong id="subtitle-preview-title">字幕效果预览</strong>
+              <strong id="subtitle-preview-title">画面与字幕预览</strong>
               <span id="subtitle-preview-meta">微软雅黑 · 42 px · #FFFFFF</span>
             </div>
+            <label class="field preview-image-field">
+              <span>预览图片</span>
+              <select id="preview-image-select" disabled aria-label="选择预览图片">
+                <option value="">扫描目录后选择图片</option>
+              </select>
+            </label>
             <label class="field preview-text-field">
               <span>预览文字</span>
               <input id="subtitle-preview-text" type="text" value="这是字幕样式预览" maxlength="80">
             </label>
-            <div class="subtitle-preview-stage">
+            <div class="subtitle-preview-stage" id="subtitle-preview-stage">
+              <img id="subtitle-preview-image" alt="当前预览图片" hidden>
+              <span class="subtitle-preview-placeholder" id="subtitle-preview-placeholder">扫描素材目录后可预览导入图片</span>
               <span id="subtitle-preview">这是字幕样式预览</span>
             </div>
-            <p class="subtitle-preview-note">预览模拟烧录字幕的字体、字号、颜色和阴影；实际效果取决于本机是否安装该字体。</p>
           </div>
 
           <div class="settings-summary">
@@ -210,7 +217,13 @@
             <p class="section-kicker">03 / 任务</p>
             <h2 id="job-title">任务状态</h2>
           </div>
-          <div class="job-state" id="job-state" data-state="idle">等待提交</div>
+          <div class="job-heading-actions">
+            <div class="job-state" id="job-state" data-state="idle">等待提交</div>
+            <button class="cancel-button" id="cancel-button" type="button" hidden>
+              <span aria-hidden="true">×</span>
+              <span>取消任务</span>
+            </button>
+          </div>
         </div>
         <div class="progress-row">
           <div class="progress-track" aria-label="任务进度"><span id="progress-bar"></span></div>

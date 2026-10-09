@@ -11,15 +11,16 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .engine import RenderEngine, validate_job
+from .engine import JobCancelled, RenderEngine, validate_job
 from .job import JobSpec
 
 
@@ -181,6 +182,7 @@ class SourceScan:
         return {
             "source_dir": str(self.directory),
             "source_name": self.directory.name or str(self.directory),
+            "suggested_output_name": _suggested_output_name(self.directory),
             "audio": audio,
             "images": [describe(path) for path in self.images],
             "subtitles": [describe(path) for path in self.subtitles],
@@ -193,6 +195,12 @@ class SourceScan:
             "warnings": self.warnings,
             "ready": self.ready,
         }
+
+
+def _suggested_output_name(directory: Path) -> str:
+    parts = [part for part in directory.parts if part not in {directory.anchor, "\\", "/"}]
+    longest = max(enumerate(parts), key=lambda item: (len(item[1]), item[0]))[1] if parts else "result"
+    return f"{longest}.mp4"
 
 
 def scan_source_directory(value: str | os.PathLike[str]) -> SourceScan:
@@ -243,6 +251,11 @@ class JobRecord:
     error: str | None = None
     result_output: Path | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    done_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    active_processes: set[subprocess.Popen[Any]] = field(default_factory=set, repr=False)
+    future: Future[Any] | None = field(default=None, repr=False)
+    cancel_requested: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -255,6 +268,7 @@ class JobRecord:
             "output_name": self.job.output.name,
             "source_dir": str(self.source_dir) if self.source_dir else None,
             "output_ready": bool(self.result_output and self.result_output.is_file()),
+            "cancelable": self.state in {"queued", "running"},
             "event_count": len(self.events),
             "events_url": f"/api/v1/jobs/{self.job_id}/events",
             "download_url": f"/api/v1/jobs/{self.job_id}/download",
@@ -289,6 +303,15 @@ class JobManager:
     def scan(self, source_dir: str | os.PathLike[str]) -> SourceScan:
         return scan_source_directory(source_dir)
 
+    def source_image(self, source_dir: str | os.PathLike[str], name: str) -> Path:
+        if not name or Path(name).name != name:
+            raise RequestValidationError("'name' must be an image filename")
+        scan = self.scan(source_dir)
+        image = next((path for path in scan.images if path.name == name), None)
+        if image is None:
+            raise NotFoundError(f"Image not found in source directory: {name}")
+        return image
+
     def _copy_uploads(self, job_id: str, upload_ids: list[str]) -> tuple[Path, dict[str, Path]]:
         input_root = self.jobs_root / job_id / "inputs"
         input_root.mkdir(parents=True, exist_ok=False)
@@ -315,9 +338,11 @@ class JobManager:
     def _build_job(self, job_id: str, payload: dict[str, Any]) -> tuple[JobSpec, Path, Path | None]:
         source_value = payload.get("source_dir")
         source_dir: Path | None = None
+        suggested_output_name = "result.mp4"
         if source_value is not None:
             scan = self.scan(source_value)
             source_dir = scan.directory
+            suggested_output_name = _suggested_output_name(scan.directory)
             input_root = scan.directory
             audio_paths = [str(path) for path in scan.audio]
             image_paths = [str(path) for path in scan.images]
@@ -337,7 +362,10 @@ class JobManager:
             audio_paths = [str(copied[item]) for item in audio_ids]
             image_paths = [str(copied[item]) for item in image_ids]
 
-        output_name = _safe_name(str(payload.get("output_name", "result.mp4")), "result.mp4")
+        output_name = _safe_name(
+            str(payload.get("output_name") or suggested_output_name),
+            suggested_output_name,
+        )
         if Path(output_name).suffix.lower() != ".mp4":
             output_name += ".mp4"
         try:
@@ -391,7 +419,7 @@ class JobManager:
         with self._lock:
             self._jobs[job_id] = record
             self._append_event(record, "job_queued", output_name=job.output.name)
-        self._executor.submit(self._run, job_id)
+            record.future = self._executor.submit(self._run, job_id)
         return record
 
     def _append_event(self, record: JobRecord, event_type: str, **payload: Any) -> None:
@@ -403,6 +431,9 @@ class JobManager:
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
+                return
+            if event.get("type") == "job_cancelled":
+                record.current_task = None
                 return
             self._append_event(record, str(event.get("type", "event")), **{
                 key: value for key, value in event.items() if key not in {"type", "time"}
@@ -417,26 +448,123 @@ class JobManager:
             elif event_type == "job_finished":
                 record.progress = 100.0
                 record.current_task = None
+                record.state = "succeeded"
+                record.result_output = Path(str(event.get("output", record.job.output)))
             elif event_type == "job_failed":
                 record.error = str(event.get("error", "Render failed"))
+                record.state = "failed"
+
+    def _track_process(self, job_id: str, process: subprocess.Popen[Any], active: bool) -> None:
+        terminate = False
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                return
+            if active:
+                record.active_processes.add(process)
+                terminate = record.cancel_requested
+            else:
+                record.active_processes.discard(process)
+        if terminate:
+            self._terminate_process(process)
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[Any]) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            process.wait()
+
+    def _mark_cancelled(self, record: JobRecord) -> None:
+        if record.state != "cancelled":
+            record.state = "cancelled"
+            record.current_task = None
+            record.error = None
+            self._append_event(record, "job_cancelled")
 
     def _run(self, job_id: str) -> None:
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
                 return
-            record.state = "running"
+            if record.cancel_requested:
+                cancel_before_run = True
+            else:
+                cancel_before_run = False
+                record.state = "running"
+        if cancel_before_run:
+            shutil.rmtree(record.root, ignore_errors=True)
+            with self._lock:
+                self._mark_cancelled(record)
+                record.done_event.set()
+            return
         try:
-            result = RenderEngine(lambda event: self._on_engine_event(job_id, event)).run(record.job)
+            result = RenderEngine(
+                lambda event: self._on_engine_event(job_id, event),
+                cancel_event=record.cancel_event,
+                process_callback=lambda process, active: self._track_process(job_id, process, active),
+            ).run(record.job)
+        except JobCancelled:
+            shutil.rmtree(record.root, ignore_errors=True)
+            with self._lock:
+                self._mark_cancelled(record)
+            return
         except Exception as exc:
             with self._lock:
-                record.state = "failed"
-                record.error = str(exc)
+                cancellation_was_requested = record.cancel_requested
+                if not cancellation_was_requested:
+                    record.state = "failed"
+                    record.error = str(exc)
+            if cancellation_was_requested:
+                shutil.rmtree(record.root, ignore_errors=True)
+                with self._lock:
+                    self._mark_cancelled(record)
             return
+        else:
+            with self._lock:
+                record.state = "succeeded"
+                record.result_output = result.output
+                record.progress = 100.0
+        finally:
+            record.done_event.set()
+
+    def cancel(self, job_id: str) -> JobRecord:
         with self._lock:
-            record.state = "succeeded"
-            record.result_output = result.output
-            record.progress = 100.0
+            record = self._jobs.get(job_id)
+            if record is None:
+                raise NotFoundError(f"Job not found: {job_id}")
+            if record.state == "cancelled":
+                return record
+            if record.state in {"succeeded", "failed"}:
+                raise ServiceError(f"Job is already {record.state} and cannot be cancelled")
+            record.cancel_requested = True
+            record.cancel_event.set()
+            future = record.future
+            processes = list(record.active_processes)
+            cancelled_before_start = bool(future and future.cancel())
+
+        for process in processes:
+            self._terminate_process(process)
+        if cancelled_before_start:
+            shutil.rmtree(record.root, ignore_errors=True)
+            with self._lock:
+                self._mark_cancelled(record)
+                record.done_event.set()
+            return record
+        if not record.done_event.wait(timeout=30):
+            raise ServiceError("Cancellation requested, but the render worker has not stopped yet")
+        shutil.rmtree(record.root, ignore_errors=True)
+        return record
 
     def get(self, job_id: str) -> JobRecord:
         with self._lock:

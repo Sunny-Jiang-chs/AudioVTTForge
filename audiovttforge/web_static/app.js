@@ -2,9 +2,13 @@ const state = {
   sourceDir: "",
   scan: null,
   assignments: {},
+  previewImageIndex: 0,
+  autoOutputName: "result.mp4",
+  outputNameTouched: false,
   jobId: null,
   after: 0,
   pollTimer: null,
+  cancelPending: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -42,9 +46,64 @@ function updateSubtitlePreview() {
   const preview = $("subtitle-preview");
   preview.textContent = text;
   preview.style.fontFamily = `"${fontName}", sans-serif`;
-  preview.style.fontSize = `${fontSize}px`;
+  const stage = $("subtitle-preview-stage");
+  const outputScale = stage.getBoundingClientRect().height / 1080;
+  preview.style.fontSize = `${Math.max(6, fontSize * outputScale)}px`;
   preview.style.color = fontColor;
+  preview.style.webkitTextStroke = `${Math.max(0.4, 2 * outputScale)}px #000`;
+  preview.style.textShadow = `0 ${Math.max(0.3, outputScale)}px ${Math.max(0.6, 2 * outputScale)}px #000`;
   $("subtitle-preview-meta").textContent = `${fontName} · ${fontSize} px · ${fontColor.toUpperCase()}`;
+}
+
+function setPreviewImage(index) {
+  const image = state.scan?.images[index];
+  const previewImage = $("subtitle-preview-image");
+  const placeholder = $("subtitle-preview-placeholder");
+  if (!image) {
+    previewImage.removeAttribute("src");
+    previewImage.hidden = true;
+    placeholder.hidden = false;
+    placeholder.textContent = "扫描素材目录后可预览导入图片";
+    return;
+  }
+
+  state.previewImageIndex = index;
+  const query = new URLSearchParams({ directory: state.sourceDir, name: image.name });
+  placeholder.hidden = false;
+  placeholder.textContent = "正在加载图片…";
+  previewImage.hidden = true;
+  previewImage.onload = () => {
+    previewImage.hidden = false;
+    placeholder.hidden = true;
+  };
+  previewImage.onerror = () => {
+    previewImage.hidden = true;
+    placeholder.hidden = false;
+    placeholder.textContent = "图片预览不可用";
+  };
+  previewImage.src = `/api/v1/sources/image?${query}`;
+}
+
+function renderPreviewImages(scan) {
+  const select = $("preview-image-select");
+  select.innerHTML = "";
+  scan.images.forEach((image, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = image.name;
+    select.appendChild(option);
+  });
+  select.disabled = !scan.images.length;
+  if (scan.images.length) {
+    select.value = "0";
+    setPreviewImage(0);
+  } else {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "未找到图片";
+    select.appendChild(option);
+    setPreviewImage(-1);
+  }
 }
 
 function showError(message) {
@@ -142,6 +201,8 @@ function renderScan(scan) {
   state.scan = scan;
   state.sourceDir = scan.source_dir;
   state.assignments = {};
+  state.autoOutputName = scan.suggested_output_name || `${scan.source_name || "result"}.mp4`;
+  if (!state.outputNameTouched) $("output-name").value = state.autoOutputName;
   $("asset-count").textContent = `${scan.counts.total} 个文件`;
   $("scan-preview").hidden = false;
   $("scan-overview").innerHTML = "";
@@ -163,6 +224,7 @@ function renderScan(scan) {
   renderAudioAssignments(scan);
   renderScanList("scan-image-list", scan.images, (item) => scanItem(item.name, formatBytes(item.size), "IMG"));
   renderScanList("scan-subtitle-list", scan.subtitles, (item) => scanItem(item.name, formatBytes(item.size), "VTT"));
+  renderPreviewImages(scan);
   $("scan-audio-count").textContent = `${scan.counts.audio} 个`;
   $("scan-image-count").textContent = `${scan.counts.images} 个`;
   $("scan-subtitle-count").textContent = `${scan.counts.subtitles} 个`;
@@ -190,6 +252,11 @@ function clearScan() {
   state.scan = null;
   state.sourceDir = "";
   state.assignments = {};
+  state.previewImageIndex = 0;
+  const previewSelect = $("preview-image-select");
+  previewSelect.innerHTML = '<option value="">扫描目录后选择图片</option>';
+  previewSelect.disabled = true;
+  setPreviewImage(-1);
   $("scan-preview").hidden = true;
   $("asset-count").textContent = "0 个文件";
   $("start-button").disabled = true;
@@ -212,6 +279,7 @@ function eventLabel(type) {
     merge_finished: "合并完成",
     job_finished: "任务完成",
     job_failed: "任务失败",
+    job_cancelled: "任务已取消",
   };
   return labels[type] || type;
 }
@@ -313,7 +381,7 @@ function buildJobPayload() {
   return {
     source_dir: state.sourceDir,
     assignments,
-    output_name: $("output-name").value.trim() || "result.mp4",
+    output_name: $("output-name").value.trim() || state.autoOutputName,
     subtitle: $("subtitle-mode").value,
     fps: Number($("fps").value),
     width: Number($("width").value),
@@ -329,22 +397,40 @@ async function pollJob() {
   try {
     const job = await parseResponse(await fetch(`/api/v1/jobs/${state.jobId}`));
     setProgress(job.progress);
-    if (job.state === "queued") setJobState("queued", "排队中");
-    if (job.state === "running") setJobState("running", job.current_task ? `处理中 · ${job.current_task}` : "处理中");
+    if (!state.cancelPending && job.state === "queued") setJobState("queued", "排队中");
+    if (!state.cancelPending && job.state === "running") setJobState("running", job.current_task ? `处理中 · ${job.current_task}` : "处理中");
+    if (job.state === "queued" || job.state === "running") {
+      $("cancel-button").hidden = false;
+      $("cancel-button").disabled = state.cancelPending;
+    }
     if (job.state === "succeeded") {
+      state.cancelPending = false;
       setJobState("succeeded", "已完成");
       $("job-summary").textContent = "文件已在本机生成，可以下载。";
       $("result-row").hidden = false;
       $("result-name").textContent = job.output_name;
       $("download-button").href = job.download_url;
       $("start-button").disabled = false;
+      $("cancel-button").hidden = true;
       clearInterval(state.pollTimer);
       state.pollTimer = null;
     }
     if (job.state === "failed") {
+      state.cancelPending = false;
       setJobState("failed", "失败");
       $("job-summary").textContent = job.error || "渲染任务失败。";
       $("start-button").disabled = false;
+      $("cancel-button").hidden = true;
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+    if (job.state === "cancelled") {
+      state.cancelPending = false;
+      setJobState("cancelled", "已取消");
+      $("job-summary").textContent = "任务进程已停止，临时文件已清理；素材和当前设置已保留。";
+      $("result-row").hidden = true;
+      $("start-button").disabled = false;
+      $("cancel-button").hidden = true;
       clearInterval(state.pollTimer);
       state.pollTimer = null;
     }
@@ -369,6 +455,8 @@ async function startJob() {
     return;
   }
   $("start-button").disabled = true;
+  $("cancel-button").hidden = true;
+  state.cancelPending = false;
   $("result-row").hidden = true;
   $("event-list").innerHTML = '<tr class="event-empty"><td colspan="3">正在创建本地任务…</td></tr>';
   setProgress(0);
@@ -383,6 +471,8 @@ async function startJob() {
     state.jobId = job.id;
     state.after = 0;
     setJobState("queued", "排队中");
+    $("cancel-button").hidden = false;
+    $("cancel-button").disabled = false;
     $("job-summary").textContent = `任务 ${job.id.slice(0, 8)} 已创建。`;
     state.pollTimer = setInterval(pollJob, 500);
     await pollJob();
@@ -391,6 +481,24 @@ async function startJob() {
     setJobState("failed", "无法提交");
     $("job-summary").textContent = "任务没有创建。";
     $("start-button").disabled = false;
+    $("cancel-button").hidden = true;
+  }
+}
+
+async function cancelJob() {
+  if (!state.jobId) return;
+  state.cancelPending = true;
+  $("cancel-button").disabled = true;
+  setJobState("running", "正在停止…");
+  $("job-summary").textContent = "正在结束后台媒体进程并清理临时文件。";
+  try {
+    await parseResponse(await fetch(`/api/v1/jobs/${state.jobId}`, { method: "DELETE" }));
+    await pollJob();
+  } catch (error) {
+    state.cancelPending = false;
+    $("cancel-button").disabled = false;
+    await pollJob();
+    showError(error.message);
   }
 }
 
@@ -402,6 +510,13 @@ sourceInput.addEventListener("keydown", (event) => {
 });
 $("scan-button").addEventListener("click", scanSource);
 $("start-button").addEventListener("click", startJob);
+$("cancel-button").addEventListener("click", cancelJob);
+$("output-name").addEventListener("input", () => {
+  state.outputNameTouched = $("output-name").value.trim() !== state.autoOutputName;
+});
+$("preview-image-select").addEventListener("change", () => {
+  setPreviewImage(Number($("preview-image-select").value));
+});
 [
   "font-name",
   "font-size",
@@ -412,5 +527,6 @@ $("start-button").addEventListener("click", startJob);
   $(id).addEventListener("change", updateSubtitlePreview);
 });
 updateSubtitlePreview();
+new ResizeObserver(updateSubtitlePreview).observe($("subtitle-preview-stage"));
 clearScan();
 checkHealth();
