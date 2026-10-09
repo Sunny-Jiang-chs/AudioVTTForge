@@ -250,6 +250,7 @@ class JobRecord:
     created_at: str
     job: JobSpec
     root: Path
+    target_output: Path
     source_dir: Path | None = None
     state: str = "queued"
     progress: float = 0.0
@@ -271,7 +272,8 @@ class JobRecord:
             "progress": round(max(0.0, min(100.0, self.progress)), 1),
             "current_task": self.current_task,
             "error": self.error,
-            "output_name": self.job.output.name,
+            "output_name": self.target_output.name,
+            "output_path": str(self.target_output),
             "source_dir": str(self.source_dir) if self.source_dir else None,
             "output_ready": bool(self.result_output and self.result_output.is_file()),
             "cancelable": self.state in {"queued", "running"},
@@ -292,7 +294,9 @@ class JobManager:
         self.root = (root or default_data_root()).expanduser().resolve()
         self.uploads = UploadStore(self.root / "uploads")
         self.jobs_root = self.root / "jobs"
+        self.outputs_root = self.root / "outputs"
         self.jobs_root.mkdir(parents=True, exist_ok=True)
+        self.outputs_root.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, JobRecord] = {}
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=max(1, max_concurrent_jobs))
@@ -341,7 +345,11 @@ class JobManager:
             raise RequestValidationError(f"'{key}' must be an array of upload ids")
         return value
 
-    def _build_job(self, job_id: str, payload: dict[str, Any]) -> tuple[JobSpec, Path, Path | None]:
+    def _build_job(
+        self,
+        job_id: str,
+        payload: dict[str, Any],
+    ) -> tuple[JobSpec, Path, Path | None, Path]:
         source_value = payload.get("source_dir")
         source_dir: Path | None = None
         suggested_output_name = "result.mp4"
@@ -374,6 +382,21 @@ class JobManager:
         )
         if Path(output_name).suffix.lower() != ".mp4":
             output_name += ".mp4"
+        output_directory_value = payload.get("output_dir")
+        if output_directory_value is None:
+            output_directory = source_dir or self.outputs_root
+        elif not isinstance(output_directory_value, (str, os.PathLike)) or not str(output_directory_value).strip():
+            raise RequestValidationError("'output_dir' must be a non-empty directory path")
+        else:
+            output_directory = Path(output_directory_value).expanduser()
+        try:
+            output_directory.mkdir(parents=True, exist_ok=True)
+            output_directory = output_directory.resolve(strict=True)
+        except OSError as exc:
+            raise RequestValidationError(f"Output directory could not be created: {output_directory}") from exc
+        if not output_directory.is_dir():
+            raise RequestValidationError(f"Output path is not a directory: {output_directory}")
+        target_output = output_directory / output_name
         try:
             workers = int(payload.get("workers", 2))
         except (TypeError, ValueError) as exc:
@@ -383,7 +406,7 @@ class JobManager:
         data: dict[str, Any] = {
             "audio": audio_paths,
             "images": image_paths,
-            "output": str(self.jobs_root / job_id / "output" / output_name),
+            "output": str(self.jobs_root / job_id / "render" / output_name),
             "subtitle": payload.get("subtitle", "burnin"),
             "fps": payload.get("fps", 2),
             "width": payload.get("width", 1920),
@@ -398,7 +421,7 @@ class JobManager:
             if payload.get(key):
                 data[key] = payload[key]
         job = JobSpec.from_dict(data, input_root)
-        return job, input_root, source_dir
+        return job, input_root, source_dir, target_output
 
     def submit(self, payload: dict[str, Any]) -> JobRecord:
         if not isinstance(payload, dict):
@@ -407,7 +430,7 @@ class JobManager:
         job_root = self.jobs_root / job_id
         job_root.mkdir(parents=True, exist_ok=False)
         try:
-            job, _input_root, source_dir = self._build_job(job_id, payload)
+            job, _input_root, source_dir, target_output = self._build_job(job_id, payload)
             errors = validate_job(job)
             if errors:
                 raise RequestValidationError("Job validation failed", errors)
@@ -421,10 +444,17 @@ class JobManager:
             shutil.rmtree(job_root, ignore_errors=True)
             raise
 
-        record = JobRecord(job_id=job_id, created_at=_now(), job=job, root=job_root, source_dir=source_dir)
+        record = JobRecord(
+            job_id=job_id,
+            created_at=_now(),
+            job=job,
+            root=job_root,
+            target_output=target_output,
+            source_dir=source_dir,
+        )
         with self._lock:
             self._jobs[job_id] = record
-            self._append_event(record, "job_queued", output_name=job.output.name)
+            self._append_event(record, "job_queued", output_name=target_output.name)
             record.future = self._executor.submit(self._run, job_id)
         return record
 
@@ -441,24 +471,53 @@ class JobManager:
             if event.get("type") == "job_cancelled":
                 record.current_task = None
                 return
-            self._append_event(record, str(event.get("type", "event")), **{
+            event_type = event.get("type")
+            if event_type == "job_finished":
+                return
+            self._append_event(record, str(event_type or "event"), **{
                 key: value for key, value in event.items() if key not in {"type", "time"}
             })
-            event_type = event.get("type")
             if event_type == "overall_progress":
                 record.progress = float(event.get("progress", record.progress))
             elif event_type == "task_started":
                 record.current_task = Path(str(event.get("audio", ""))).name or None
             elif event_type == "task_finished":
                 record.current_task = None
-            elif event_type == "job_finished":
-                record.progress = 100.0
-                record.current_task = None
-                record.state = "succeeded"
-                record.result_output = Path(str(event.get("output", record.job.output)))
             elif event_type == "job_failed":
                 record.error = str(event.get("error", "Render failed"))
                 record.state = "failed"
+
+    @staticmethod
+    def _publish_output(
+        source: Path,
+        target: Path,
+        job_id: str,
+        cancel_event: threading.Event | None = None,
+    ) -> Path:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{job_id}.tmp")
+        try:
+            with source.open("rb") as input_stream, temporary.open("wb") as output_stream:
+                while chunk := input_stream.read(4 * 1024 * 1024):
+                    if cancel_event and cancel_event.is_set():
+                        raise JobCancelled("Render job was cancelled while publishing output")
+                    output_stream.write(chunk)
+                output_stream.flush()
+                os.fsync(output_stream.fileno())
+            source_size = source.stat().st_size
+            if temporary.stat().st_size != source_size:
+                raise ServiceError(f"Published output size does not match render output: {target}")
+            if cancel_event and cancel_event.is_set():
+                raise JobCancelled("Render job was cancelled while publishing output")
+            os.replace(temporary, target)
+            if not target.is_file() or target.stat().st_size != source_size:
+                raise ServiceError(f"Published output could not be verified: {target}")
+            return target
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _track_process(self, job_id: str, process: subprocess.Popen[Any], active: bool) -> None:
         terminate = False
@@ -537,10 +596,36 @@ class JobManager:
                     self._mark_cancelled(record)
             return
         else:
+            try:
+                published_output = self._publish_output(
+                    result.output,
+                    record.target_output,
+                    job_id,
+                    record.cancel_event,
+                )
+            except JobCancelled:
+                shutil.rmtree(record.root, ignore_errors=True)
+                with self._lock:
+                    self._mark_cancelled(record)
+                return
+            except Exception as exc:
+                with self._lock:
+                    record.state = "failed"
+                    record.error = f"Could not write final output: {exc}"
+                    self._append_event(record, "job_failed", error=record.error)
+                return
+            shutil.rmtree(record.root, ignore_errors=True)
             with self._lock:
                 record.state = "succeeded"
-                record.result_output = result.output
+                record.result_output = published_output
                 record.progress = 100.0
+                record.current_task = None
+                self._append_event(
+                    record,
+                    "job_finished",
+                    output=str(published_output),
+                    cache_cleaned=not record.root.exists(),
+                )
         finally:
             record.done_event.set()
 

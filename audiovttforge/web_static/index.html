@@ -97,6 +97,10 @@
               <span>输出文件名</span>
               <input id="output-name" type="text" value="result.mp4" spellcheck="false">
             </label>
+            <label class="field">
+              <span>输出目录</span>
+              <input id="output-dir" type="text" placeholder="扫描素材后默认使用素材目录" autocomplete="off" spellcheck="false">
+            </label>
             <div class="field-row">
               <label class="field">
                 <span>字幕模式</span>
@@ -212,6 +216,15 @@
       </div>
 
       <section class="panel job-panel" aria-labelledby="job-title">
+        <div class="result-row" id="result-row" hidden>
+          <div>
+            <span class="result-label">已保存到</span>
+            <strong id="result-name">result.mp4</strong>
+          </div>
+          <a class="download-button" id="download-button" href="#" download>
+            <span aria-hidden="true">↓</span> 下载副本
+          </a>
+        </div>
         <div class="panel-heading job-heading">
           <div>
             <p class="section-kicker">03 / 任务</p>
@@ -241,15 +254,6 @@
               <tr class="event-empty"><td colspan="3">任务事件会显示在这里</td></tr>
             </tbody>
           </table>
-        </div>
-        <div class="result-row" id="result-row" hidden>
-          <div>
-            <span class="result-label">渲染完成</span>
-            <strong id="result-name">result.mp4</strong>
-          </div>
-          <a class="download-button" id="download-button" href="#" download>
-            <span aria-hidden="true">↓</span> 下载 MP4
-          </a>
         </div>
       </section>
     </main>

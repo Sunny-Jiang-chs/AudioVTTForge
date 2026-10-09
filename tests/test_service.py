@@ -1,6 +1,8 @@
 import time
 from pathlib import Path
 
+import pytest
+
 from audiovttforge.service import (
     JobManager,
     NotFoundError,
@@ -75,6 +77,9 @@ def test_job_manager_runs_upload_backed_job(tmp_path: Path) -> None:
     wait_for_state(manager, record.job_id, "succeeded")
     current = manager.get(record.job_id)
     assert current.result_output is not None and current.result_output.is_file()
+    assert current.result_output.parent == manager.outputs_root
+    assert not current.root.exists()
+    assert current.to_dict()["output_path"] == str(current.result_output)
     events = manager.events(record.job_id)
     assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
     assert events[0]["type"] == "job_queued"
@@ -150,7 +155,74 @@ def test_job_manager_runs_source_directory_job(tmp_path: Path) -> None:
     assert current.job.font_size == 56
     assert current.job.font_color == "#12ABEF"
     assert current.job.output.name == _suggested_output_name(source.resolve())
-    assert current.result_output is not None and current.result_output.is_file()
+    assert current.result_output == source / _suggested_output_name(source.resolve())
+    assert current.result_output.is_file()
+    assert not current.root.exists()
+    manager.shutdown()
+
+
+def test_source_job_publishes_to_requested_output_directory(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.mp3").write_bytes(b"audio")
+    (source / "cover.png").write_bytes(b"image")
+    destination = tmp_path / "exports"
+    manager = JobManager(tmp_path / "data")
+
+    record = manager.submit(
+        {
+            "source_dir": str(source),
+            "output_dir": str(destination),
+            "output_name": "custom-name.mp4",
+            "workers": 1,
+            "ffmpeg": str(tool),
+            "ffprobe": str(tool),
+        }
+    )
+
+    wait_for_state(manager, record.job_id, "succeeded")
+    current = manager.get(record.job_id)
+    assert current.result_output == destination / "custom-name.mp4"
+    assert current.result_output.read_bytes() == b"fake mp4"
+    assert not current.root.exists()
+    assert manager.events(record.job_id)[-1]["type"] == "job_finished"
+    assert manager.events(record.job_id)[-1]["output"] == str(current.result_output)
+    manager.shutdown()
+
+
+def test_publish_failure_keeps_render_cache_for_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "cover.png").write_bytes(b"image")
+    manager = JobManager(tmp_path / "data")
+
+    def fail_publish(*_args: object) -> Path:
+        raise OSError("destination unavailable")
+
+    monkeypatch.setattr(manager, "_publish_output", fail_publish)
+    record = manager.submit(
+        {
+            "source_dir": str(source),
+            "workers": 1,
+            "ffmpeg": str(tool),
+            "ffprobe": str(tool),
+        }
+    )
+
+    wait_for_state(manager, record.job_id, "failed")
+    current = manager.get(record.job_id)
+    assert current.root.is_dir()
+    assert current.result_output is None
+    assert "destination unavailable" in (current.error or "")
+    assert manager.events(record.job_id)[-1]["type"] == "job_failed"
     manager.shutdown()
 
 

@@ -121,6 +121,8 @@ def test_rest_resources_serve_ui_upload_and_job(tmp_path: Path) -> None:
         )
         completed = wait_for_state(f"{base_url}/api/v1/jobs/{job['id']}", "succeeded")
         assert completed["output_ready"] is True
+        assert Path(completed["output_path"]).parent == manager.outputs_root
+        assert not manager.get(job["id"]).root.exists()
         events = request_json(f"{base_url}/api/v1/jobs/{job['id']}/events")
         assert events["items"][-1]["type"] == "job_finished"
         with urllib.request.urlopen(f"{base_url}{completed['download_url']}", timeout=5) as response:

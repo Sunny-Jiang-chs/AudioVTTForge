@@ -203,6 +203,7 @@ function renderScan(scan) {
   state.assignments = {};
   state.autoOutputName = scan.suggested_output_name || `${scan.source_name || "result"}.mp4`;
   if (!state.outputNameTouched) $("output-name").value = state.autoOutputName;
+  $("output-dir").value = scan.source_dir;
   $("asset-count").textContent = `${scan.counts.total} 个文件`;
   $("scan-preview").hidden = false;
   $("scan-overview").innerHTML = "";
@@ -253,6 +254,7 @@ function clearScan() {
   state.sourceDir = "";
   state.assignments = {};
   state.previewImageIndex = 0;
+  $("output-dir").value = "";
   const previewSelect = $("preview-image-select");
   previewSelect.innerHTML = '<option value="">扫描目录后选择图片</option>';
   previewSelect.disabled = true;
@@ -380,6 +382,7 @@ function buildJobPayload() {
   });
   return {
     source_dir: state.sourceDir,
+    output_dir: $("output-dir").value.trim() || state.sourceDir,
     assignments,
     output_name: $("output-name").value.trim() || state.autoOutputName,
     subtitle: $("subtitle-mode").value,
@@ -406,9 +409,10 @@ async function pollJob() {
     if (job.state === "succeeded") {
       state.cancelPending = false;
       setJobState("succeeded", "已完成");
-      $("job-summary").textContent = "文件已在本机生成，可以下载。";
+      $("job-summary").textContent = `文件已保存到 ${job.output_path}`;
       $("result-row").hidden = false;
-      $("result-name").textContent = job.output_name;
+      $("result-name").textContent = job.output_path;
+      $("result-name").title = job.output_path;
       $("download-button").href = job.download_url;
       $("start-button").disabled = false;
       $("cancel-button").hidden = true;
