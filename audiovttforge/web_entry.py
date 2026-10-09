@@ -16,25 +16,13 @@ if __package__ in {None, ""}:
 from audiovttforge.web import main as web_main
 
 
-def _pause_for_reader() -> None:
-    """Keep a double-clicked console window open so the message can be read."""
-    try:
-        if sys.stdin is not None and sys.stdin.isatty():
-            input("按回车键退出…")
-    except (EOFError, OSError):
-        pass
-
-
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     # Double-clicking the packaged EXE should land in the browser; passing either
     # flag explicitly lets scripts and headless checks keep control.
     if not any(flag in arguments for flag in ("--open-browser", "--no-open-browser")):
         arguments.append("--open-browser")
-    exit_code = web_main(arguments)
-    if exit_code != 0:
-        _pause_for_reader()
-    return exit_code
+    return web_main(arguments)
 
 
 if __name__ == "__main__":

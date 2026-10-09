@@ -79,22 +79,6 @@ def _safe_name(value: str, fallback: str) -> str:
     return name
 
 
-def _ensure_directory(path: Path, purpose: str) -> None:
-    """Create a directory the service needs, or explain why it cannot.
-
-    A bare ``OSError`` from deep inside the job manager reaches the user as a
-    traceback with no hint about which path or option to change; name the
-    directory and point at ``--data-root`` instead.
-    """
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise ServiceError(
-            f"Could not create the {purpose} directory: {path} ({exc}). "
-            "Start with --data-root pointing at a writable location."
-        ) from exc
-
-
 def _natural_sort_key(value: str) -> tuple[tuple[int, object], ...]:
     """Sort names like 01, 02, 10 instead of 01, 10, 02."""
     return tuple(
@@ -132,7 +116,7 @@ class UploadStore:
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        _ensure_directory(self.root, "upload")
+        self.root.mkdir(parents=True, exist_ok=True)
         self._records: dict[str, UploadRecord] = {}
         self._lock = threading.RLock()
 
@@ -404,12 +388,11 @@ class JobManager:
         max_concurrent_jobs: int = 1,
     ) -> None:
         self.root = (root or default_data_root()).expanduser().resolve()
-        _ensure_directory(self.root, "data")
         self.uploads = UploadStore(self.root / "uploads")
         self.jobs_root = self.root / "jobs"
         self.outputs_root = self.root / "outputs"
-        _ensure_directory(self.jobs_root, "job cache")
-        _ensure_directory(self.outputs_root, "output")
+        self.jobs_root.mkdir(parents=True, exist_ok=True)
+        self.outputs_root.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, JobRecord] = {}
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=max(1, max_concurrent_jobs))
