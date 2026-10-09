@@ -13,19 +13,22 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .engine import JobCancelled, RenderEngine, validate_job
-from .job import JobSpec
+from .job import FONT_SIZE_LIMITS, SUBTITLE_MODES, WORKER_LIMITS, JobSpec
 from .media import (
     AUDIO_EXTENSIONS as MEDIA_AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS as MEDIA_IMAGE_EXTENSIONS,
     SUBTITLE_EXTENSIONS as MEDIA_SUBTITLE_EXTENSIONS,
+    automatic_image_index,
     find_subtitle,
     subtitle_candidates,
 )
@@ -45,6 +48,14 @@ class RequestValidationError(ServiceError):
     def __init__(self, message: str, details: list[str] | None = None) -> None:
         super().__init__(message)
         self.details = details or []
+
+
+# FFmpeg writes a stats line every ~0.5s per task, so a long render can emit
+# tens of thousands of progress events.  Only the recent window is kept in
+# memory; the JSONL event file next to the render still records every line.
+MAX_RETAINED_PROGRESS_EVENTS = 400
+PROGRESS_EVENT_TYPES = frozenset({"task_progress"})
+UPLOAD_TTL_SECONDS = 24 * 60 * 60
 
 
 def default_data_root() -> Path:
@@ -146,6 +157,30 @@ class UploadStore:
             raise NotFoundError(f"Upload not found: {upload_id}")
         return record
 
+    def prune(self, max_age_seconds: float) -> list[str]:
+        """Remove upload directories last written more than ``max_age_seconds`` ago.
+
+        Uploads are only reachable through the in-memory registry, so nothing can
+        reference the pruned directories after a restart.
+        """
+        cutoff = time.time() - max_age_seconds
+        try:
+            candidates = list(self.root.iterdir())
+        except OSError:
+            return []
+        removed: list[str] = []
+        for entry in candidates:
+            try:
+                if not entry.is_dir() or entry.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+            with self._lock:
+                self._records.pop(entry.name, None)
+            removed.append(entry.name)
+        return removed
+
 
 @dataclass(frozen=True)
 class SourceScan:
@@ -178,13 +213,26 @@ class SourceScan:
         def describe(path: Path) -> dict[str, Any]:
             return {"name": path.name, "size": path.stat().st_size}
 
-        audio = [
-            {
-                **describe(path),
-                "subtitle": find_subtitle(path).name if find_subtitle(path) else None,
-            }
-            for path in self.audio
-        ]
+        audio: list[dict[str, Any]] = []
+        for index, path in enumerate(self.audio):
+            subtitle = find_subtitle(path)
+            automatic = (
+                automatic_image_index(index, len(self.audio), len(self.images))
+                if self.images
+                else None
+            )
+            audio.append(
+                {
+                    **describe(path),
+                    "subtitle": subtitle.name if subtitle else None,
+                    # The browser must not re-derive the assignment rule; the
+                    # default mapping is computed once, here.
+                    "automatic_image": automatic,
+                    "automatic_image_name": (
+                        self.images[automatic].name if automatic is not None else None
+                    ),
+                }
+            )
         return {
             "source_dir": str(self.directory),
             "source_name": self.directory.name or str(self.directory),
@@ -244,6 +292,49 @@ def scan_source_directory(value: str | os.PathLike[str]) -> SourceScan:
     return SourceScan(directory, audio, images, subtitles)
 
 
+def job_defaults() -> dict[str, Any]:
+    """Render defaults taken from ``JobSpec`` itself, not from a second copy."""
+    names = {"subtitle", "fps", "width", "workers", "font_name", "font_size", "font_color"}
+    return {
+        item.name: item.default
+        for item in fields(JobSpec)
+        if item.name in names and item.default is not MISSING
+    }
+
+
+def capabilities() -> dict[str, Any]:
+    """Describe what this service accepts, so clients stop hardcoding it."""
+    return {
+        "api_version": "v1",
+        "subtitle_modes": sorted(SUBTITLE_MODES),
+        "defaults": job_defaults(),
+        "limits": {
+            "workers": list(WORKER_LIMITS),
+            "font_size": list(FONT_SIZE_LIMITS),
+        },
+        "options": {
+            "fps": [1, 2, 5, 10, 24],
+            "width": [1080, 1280, 1920, 2560],
+            "workers": list(range(WORKER_LIMITS[0], WORKER_LIMITS[1] + 1)),
+            "font_size": [24, 32, 42, 48, 56, 64],
+            "font_name": [
+                "Microsoft YaHei",
+                "SimSun",
+                "SimHei",
+                "Yu Gothic",
+                "Arial",
+                "Segoe UI",
+                "Noto Sans CJK SC",
+            ],
+        },
+        "upload_kinds": {
+            "audio": sorted(UploadStore.AUDIO_EXTENSIONS),
+            "image": sorted(UploadStore.IMAGE_EXTENSIONS),
+            "subtitle": sorted(UploadStore.SUBTITLE_EXTENSIONS),
+        },
+    }
+
+
 @dataclass
 class JobRecord:
     job_id: str
@@ -258,6 +349,11 @@ class JobRecord:
     error: str | None = None
     result_output: Path | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
+    progress_events: deque[dict[str, Any]] = field(
+        default_factory=lambda: deque(maxlen=MAX_RETAINED_PROGRESS_EVENTS),
+        repr=False,
+    )
+    event_count: int = 0
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     done_event: threading.Event = field(default_factory=threading.Event, repr=False)
     active_processes: set[subprocess.Popen[Any]] = field(default_factory=set, repr=False)
@@ -277,7 +373,7 @@ class JobRecord:
             "source_dir": str(self.source_dir) if self.source_dir else None,
             "output_ready": bool(self.result_output and self.result_output.is_file()),
             "cancelable": self.state in {"queued", "running"},
-            "event_count": len(self.events),
+            "event_count": self.event_count,
             "events_url": f"/api/v1/jobs/{self.job_id}/events",
             "download_url": f"/api/v1/jobs/{self.job_id}/download",
         }
@@ -300,6 +396,29 @@ class JobManager:
         self._jobs: dict[str, JobRecord] = {}
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=max(1, max_concurrent_jobs))
+        self._purge_stale_state()
+
+    def _purge_stale_state(self) -> None:
+        """Reclaim caches that no live job can own any more.
+
+        The job registry only exists in memory, so anything already under
+        ``jobs_root`` at construction time belongs to a previous process that
+        exited without cleaning up (crash or force-kill).  Render caches reach
+        gigabytes, so they are dropped at startup rather than accumulated.
+        """
+        try:
+            entries = list(self.jobs_root.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            try:
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink(missing_ok=True)
+            except OSError:
+                continue
+        self.uploads.prune(UPLOAD_TTL_SECONDS)
 
     def shutdown(self, wait: bool = False, cancel_futures: bool = True) -> None:
         """Release worker resources when the local API server exits."""
@@ -397,24 +516,18 @@ class JobManager:
         if not output_directory.is_dir():
             raise RequestValidationError(f"Output path is not a directory: {output_directory}")
         target_output = output_directory / output_name
-        try:
-            workers = int(payload.get("workers", 2))
-        except (TypeError, ValueError) as exc:
-            raise RequestValidationError("并行进程数必须是 1 到 10 之间的整数") from exc
-        if not 1 <= workers <= 10:
-            raise RequestValidationError("并行进程数必须是 1 到 10 之间的整数")
         data: dict[str, Any] = {
             "audio": audio_paths,
             "images": image_paths,
             "output": str(self.jobs_root / job_id / "render" / output_name),
-            "subtitle": payload.get("subtitle", "burnin"),
-            "fps": payload.get("fps", 2),
-            "width": payload.get("width", 1920),
-            "workers": workers,
-            "font_name": payload.get("font_name", "Microsoft YaHei"),
-            "font_size": payload.get("font_size", 42),
-            "font_color": payload.get("font_color", "#FFFFFF"),
         }
+        # Forward only what the caller actually chose; every other field keeps the
+        # default declared on JobSpec.
+        for key in ("subtitle", "fps", "width", "font_name", "font_size", "font_color"):
+            if payload.get(key) is not None:
+                data[key] = payload[key]
+        if payload.get("workers") is not None:
+            data["workers"] = self._validated_workers(payload["workers"])
         if "assignments" in payload:
             data["assignments"] = payload["assignments"]
         for key in ("ffmpeg", "ffprobe"):
@@ -422,6 +535,17 @@ class JobManager:
                 data[key] = payload[key]
         job = JobSpec.from_dict(data, input_root)
         return job, input_root, source_dir, target_output
+
+    @staticmethod
+    def _validated_workers(value: Any) -> int:
+        message = f"并行进程数必须是 {WORKER_LIMITS[0]} 到 {WORKER_LIMITS[1]} 之间的整数"
+        try:
+            workers = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RequestValidationError(message) from exc
+        if not WORKER_LIMITS[0] <= workers <= WORKER_LIMITS[1]:
+            raise RequestValidationError(message)
+        return workers
 
     def submit(self, payload: dict[str, Any]) -> JobRecord:
         if not isinstance(payload, dict):
@@ -459,9 +583,14 @@ class JobManager:
         return record
 
     def _append_event(self, record: JobRecord, event_type: str, **payload: Any) -> None:
-        event = {"type": event_type, "time": _now(), **payload}
-        event["seq"] = len(record.events) + 1
-        record.events.append(event)
+        record.event_count += 1
+        event = {"type": event_type, "time": _now(), **payload, "seq": record.event_count}
+        if event_type in PROGRESS_EVENT_TYPES:
+            # Bounded ring buffer: progress lines are transient, so dropping the
+            # oldest ones keeps memory flat without breaking the seq cursor.
+            record.progress_events.append(event)
+        else:
+            record.events.append(event)
 
     def _on_engine_event(self, job_id: str, event: dict[str, Any]) -> None:
         with self._lock:
@@ -590,6 +719,11 @@ class JobManager:
                 if not cancellation_was_requested:
                     record.error = str(exc)
                     record.state = "failed"
+                    # A failure before the render starts (validation, unwritable
+                    # cache) never reaches the engine event sink, so record it
+                    # here unless the engine already reported one.
+                    if not any(event.get("type") == "job_failed" for event in record.events):
+                        self._append_event(record, "job_failed", error=record.error)
             if cancellation_was_requested:
                 shutil.rmtree(record.root, ignore_errors=True)
                 with self._lock:
@@ -677,10 +811,37 @@ class JobManager:
         with self._lock:
             return self.get(job_id).to_dict()
 
+    def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return the most recent job resources, newest first.
+
+        Without this the browser cannot recover a job handle after a reload,
+        because job ids only ever exist in page memory.
+        """
+        with self._lock:
+            records = sorted(
+                self._jobs.values(),
+                key=lambda record: record.created_at,
+                reverse=True,
+            )
+            return [record.to_dict() for record in records[:limit]]
+
     def events(self, job_id: str, after: int = 0) -> list[dict[str, Any]]:
+        """Return retained events with ``seq`` greater than ``after``.
+
+        Progress events live in a bounded ring buffer, so a cursor that fell far
+        behind simply misses the oldest progress lines instead of replaying them.
+        """
         record = self.get(job_id)
         with self._lock:
-            return [dict(event) for event in record.events if int(event["seq"]) > after]
+            retained = [
+                dict(event)
+                for event in sorted(
+                    (*record.events, *record.progress_events),
+                    key=lambda item: item["seq"],
+                )
+                if event["seq"] > after
+            ]
+            return retained
 
     def output_path(self, job_id: str) -> Path:
         record = self.get(job_id)

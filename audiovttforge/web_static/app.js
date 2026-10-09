@@ -19,6 +19,45 @@ const MAX_POLL_FAILURES = 10;
 const $ = (id) => document.getElementById(id);
 const sourceInput = $("source-dir");
 
+// Survives a page reload so a running render can be picked up again (the job
+// registry itself only lives in the service process).
+const JOB_STORAGE_KEY = "audiovttforge.jobId";
+
+// Labels stay in the UI; every value, default and limit comes from the
+// /api/v1/capabilities resource so nothing is declared twice.
+const SUBTITLE_LABELS = {
+  burnin: "烧录到画面",
+  embedded: "嵌入字幕轨",
+  none: "不处理字幕",
+};
+
+const FONT_LABELS = {
+  "Microsoft YaHei": "微软雅黑",
+  SimSun: "宋体",
+  SimHei: "黑体",
+  "Yu Gothic": "游ゴシック",
+  Arial: "Arial",
+  "Segoe UI": "Segoe UI",
+  "Noto Sans CJK SC": "Noto Sans CJK SC",
+};
+
+function fillSelect(select, values, format) {
+  select.innerHTML = "";
+  values.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = format(value);
+    select.appendChild(option);
+  });
+}
+
+function selectValue(select, value) {
+  const target = String(value);
+  if (Array.from(select.options).some((option) => option.value === target)) {
+    select.value = target;
+  }
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -121,9 +160,9 @@ function setScanStatus(message, tone = "") {
   status.dataset.state = tone;
 }
 
-function scanItem(name, meta, badge, tone = "") {
+function scanItem(name, meta, badge) {
   const item = document.createElement("div");
-  item.className = `scan-item${tone ? ` ${tone}` : ""}`;
+  item.className = "scan-item";
   const badgeElement = document.createElement("span");
   badgeElement.className = "file-badge";
   badgeElement.textContent = badge;
@@ -151,11 +190,6 @@ function renderScanList(targetId, items, describe) {
   items.forEach((item) => target.appendChild(describe(item)));
 }
 
-function automaticImageIndex(audioIndex, audioCount, imageCount) {
-  if (!imageCount) return -1;
-  return Math.min(imageCount - 1, Math.floor(audioIndex * imageCount / audioCount));
-}
-
 function renderAudioAssignments(scan) {
   const target = $("scan-audio-list");
   target.innerHTML = "";
@@ -163,7 +197,7 @@ function renderAudioAssignments(scan) {
     renderScanList("scan-audio-list", [], () => null);
     return;
   }
-  scan.audio.forEach((audio, audioIndex) => {
+  scan.audio.forEach((audio) => {
     const row = document.createElement("div");
     row.className = "assignment-row";
 
@@ -181,10 +215,12 @@ function renderAudioAssignments(scan) {
     const select = document.createElement("select");
     select.className = "assignment-select";
     select.setAttribute("aria-label", `${audio.name} 使用图片`);
-    const automaticIndex = automaticImageIndex(audioIndex, scan.audio.length, scan.images.length);
+    // The default mapping is computed by the service, not re-derived here.
     const automaticOption = document.createElement("option");
     automaticOption.value = "";
-    automaticOption.textContent = automaticIndex >= 0 ? `自动分配 · ${scan.images[automaticIndex].name}` : "自动分配";
+    automaticOption.textContent = audio.automatic_image_name
+      ? `自动分配 · ${audio.automatic_image_name}`
+      : "自动分配";
     select.appendChild(automaticOption);
     scan.images.forEach((image, imageIndex) => {
       const option = document.createElement("option");
@@ -382,15 +418,10 @@ async function scanSource() {
 }
 
 function buildJobPayload() {
-  const assignments = state.scan.audio.map((audio, audioIndex) => {
-    const selected = state.assignments[audio.name];
-    if (selected !== undefined && selected !== null) return selected;
-    return automaticImageIndex(audioIndex, state.scan.audio.length, state.scan.images.length);
-  });
-  return {
+  const overrides = state.scan.audio.map((audio) => state.assignments[audio.name]);
+  const payload = {
     source_dir: state.sourceDir,
     output_dir: $("output-dir").value.trim() || state.sourceDir,
-    assignments,
     output_name: $("output-name").value.trim() || state.autoOutputName,
     subtitle: $("subtitle-mode").value,
     fps: Number($("fps").value),
@@ -400,6 +431,14 @@ function buildJobPayload() {
     font_size: Number($("font-size").value),
     font_color: $("font-color").value,
   };
+  // Only pin assignments when the user actually changed one; otherwise the
+  // service applies its own default mapping.
+  if (overrides.some((value) => value !== undefined && value !== null)) {
+    payload.assignments = state.scan.audio.map(
+      (audio, index) => overrides[index] ?? audio.automatic_image ?? 0,
+    );
+  }
+  return payload;
 }
 
 async function pollJob() {
@@ -450,6 +489,7 @@ async function pollJob() {
       $("result-row").hidden = true;
       $("start-button").disabled = false;
       $("cancel-button").hidden = true;
+      forgetJob();
       clearInterval(state.pollTimer);
       state.pollTimer = null;
     }
@@ -469,6 +509,7 @@ async function pollJob() {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
     state.jobId = null;
+    forgetJob();
     setJobState("failed", "状态未知");
     $("job-summary").textContent = "与本地服务的连接已中断；后台渲染可能仍在进行，请检查服务窗口。";
     $("start-button").disabled = false;
@@ -476,6 +517,87 @@ async function pollJob() {
   } finally {
     state.polling = false;
   }
+}
+
+function rememberJob(jobId) {
+  try {
+    sessionStorage.setItem(JOB_STORAGE_KEY, jobId);
+  } catch (_error) {
+    /* private mode or storage disabled: recovery is simply unavailable */
+  }
+}
+
+function forgetJob() {
+  try {
+    sessionStorage.removeItem(JOB_STORAGE_KEY);
+  } catch (_error) {
+    /* nothing to clean up */
+  }
+}
+
+function storedJobId() {
+  try {
+    return sessionStorage.getItem(JOB_STORAGE_KEY);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function applyCapabilities(report) {
+  const options = report.options || {};
+  const defaults = report.defaults || {};
+  fillSelect($("subtitle-mode"), report.subtitle_modes || [], (value) => SUBTITLE_LABELS[value] || value);
+  fillSelect($("fps"), options.fps || [], (value) => `${value} fps`);
+  fillSelect($("width"), options.width || [], (value) => `${value} px`);
+  fillSelect($("workers"), options.workers || [], (value) => `${value} 个`);
+  fillSelect($("font-size"), options.font_size || [], (value) => `${value} px`);
+  fillSelect($("font-name"), options.font_name || [], (value) => FONT_LABELS[value] || value);
+  selectValue($("subtitle-mode"), defaults.subtitle);
+  selectValue($("fps"), defaults.fps);
+  selectValue($("width"), defaults.width);
+  selectValue($("workers"), defaults.workers);
+  selectValue($("font-size"), defaults.font_size);
+  selectValue($("font-name"), defaults.font_name);
+  if (/^#[0-9a-fA-F]{6}$/.test(String(defaults.font_color))) {
+    $("font-color").value = defaults.font_color;
+  }
+  updateSubtitlePreview();
+}
+
+async function loadCapabilities() {
+  try {
+    applyCapabilities(await parseResponse(await fetch("/api/v1/capabilities")));
+    return true;
+  } catch (error) {
+    showError(`无法读取服务参数：${error.message}`);
+    $("start-button").disabled = true;
+    return false;
+  }
+}
+
+async function restoreJob() {
+  const jobId = storedJobId();
+  if (!jobId) return;
+  state.jobId = jobId;
+  state.after = 0;
+  $("start-button").disabled = true;
+  $("cancel-button").hidden = false;
+  setJobState("queued", "恢复中");
+  $("job-summary").textContent = "正在恢复上次的渲染任务…";
+  try {
+    await parseResponse(await fetch(`/api/v1/jobs/${jobId}`));
+  } catch (_error) {
+    // The service restarted or the cache was reclaimed: the handle is stale.
+    forgetJob();
+    state.jobId = null;
+    $("start-button").disabled = false;
+    $("cancel-button").hidden = true;
+    setJobState("idle", "等待提交");
+    $("job-summary").textContent = "上次的任务已经不在了，请重新扫描素材目录。";
+    return;
+  }
+  state.pollTimer = setInterval(pollJob, 500);
+  await pollJob();
 }
 
 async function startJob() {
@@ -505,6 +627,7 @@ async function startJob() {
     }));
     state.jobId = job.id;
     state.after = 0;
+    rememberJob(job.id);
     setJobState("queued", "排队中");
     $("cancel-button").hidden = false;
     $("cancel-button").disabled = false;
@@ -564,4 +687,11 @@ $("preview-image-select").addEventListener("change", () => {
 updateSubtitlePreview();
 new ResizeObserver(updateSubtitlePreview).observe($("subtitle-preview-stage"));
 clearScan();
-checkHealth();
+
+async function bootstrap() {
+  await checkHealth();
+  await loadCapabilities();
+  await restoreJob();
+}
+
+bootstrap();

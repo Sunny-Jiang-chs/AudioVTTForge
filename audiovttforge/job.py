@@ -17,6 +17,9 @@ DEFAULT_FFPROBE = Path(
     r"D:\tools\ffmpeg\ffmpeg-9.0.1-essentials_build\bin\ffprobe.exe"
 )
 SUBTITLE_MODES = {"burnin", "embedded", "none"}
+# Domain limits shared by validation, the REST layer and the capabilities resource.
+WORKER_LIMITS = (1, 10)
+FONT_SIZE_LIMITS = (8, 144)
 
 
 def _resolve_path(value: str | os.PathLike[str], base_dir: Path) -> Path:

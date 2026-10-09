@@ -14,18 +14,48 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-from .job import SUBTITLE_MODES
 from .service import (
     JobManager,
     NotFoundError,
     RequestValidationError,
     ServiceError,
+    capabilities,
     default_data_root,
 )
 
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+# Single source of truth for the API surface: (method, path pattern).  ``None``
+# matches exactly one variable segment, so any new collection endpoint (for
+# example "GET /api/v1/jobs") only needs a row here and a branch in _dispatch.
+ROUTES: tuple[tuple[str, tuple[str | None, ...]], ...] = (
+    ("GET", ("api", "v1", "health")),
+    ("GET", ("api", "v1", "capabilities")),
+    ("GET", ("api", "v1", "jobs")),
+    ("GET", ("api", "v1", "jobs", None)),
+    ("GET", ("api", "v1", "jobs", None, "events")),
+    ("GET", ("api", "v1", "jobs", None, "download")),
+    ("GET", ("api", "v1", "sources", "image")),
+    ("POST", ("api", "v1", "sources", "scan")),
+    ("POST", ("api", "v1", "uploads")),
+    ("POST", ("api", "v1", "jobs")),
+    ("DELETE", ("api", "v1", "jobs", None)),
+)
+
+
+def match_route(method: str, parts: list[str]) -> tuple[str | None, ...] | None:
+    """Return the declared route pattern matching this request, if any."""
+    for route_method, pattern in ROUTES:
+        if route_method != method or len(pattern) != len(parts):
+            continue
+        if all(
+            expected is None or expected == actual
+            for expected, actual in zip(pattern, parts)
+        ):
+            return pattern
+    return None
 
 
 def content_disposition(name: str) -> str:
@@ -156,156 +186,115 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
         self._send_bytes(candidate.read_bytes(), content_type)
 
-    def _handle_get(self) -> None:
+    def _dispatch(self) -> None:
         parsed = urlsplit(self.path)
         path = parsed.path
-        if path == "/favicon.ico":
-            self._send_bytes(b"", "image/x-icon", 204)
-            return
-        if path == "/" or path.startswith("/assets/"):
-            self._serve_static(path.removeprefix("/assets/") if path.startswith("/assets/") else "index.html")
-            return
+        if self.command == "GET":
+            if path == "/favicon.ico":
+                self._send_bytes(b"", "image/x-icon", 204)
+                return
+            if path == "/" or path.startswith("/assets/"):
+                relative = path.removeprefix("/assets/") if path.startswith("/assets/") else "index.html"
+                self._serve_static(relative)
+                return
         parts = [unquote(part) for part in path.split("/") if part]
-        api_roots = (
-            ["api", "v1", "health"],
-            ["api", "v1", "capabilities"],
-            ["api", "v1", "jobs"],
-            ["api", "v1", "sources"],
-        )
-        if parts[:3] not in api_roots:
+        pattern = match_route(self.command, parts)
+        if pattern is None:
             raise HttpRequestError(404, "Resource not found")
-        if parts[:3] == ["api", "v1", "health"] and len(parts) == 3:
+        if pattern == ("api", "v1", "health"):
             self._send_json({"status": "ok", "service": "AudioVTTForge", "api_version": "v1"})
-            return
-        if parts[:3] == ["api", "v1", "capabilities"] and len(parts) == 3:
-            self._send_json(
-                {
-                    "subtitle_modes": sorted(SUBTITLE_MODES),
-                    "defaults": {
-                        "fps": 2,
-                        "width": 1920,
-                        "workers": 2,
-                        "subtitle": "burnin",
-                        "font_name": "Microsoft YaHei",
-                        "font_size": 42,
-                        "font_color": "#FFFFFF",
-                    },
-                    "upload_kinds": {
-                        "audio": sorted(self.manager.uploads.AUDIO_EXTENSIONS),
-                        "image": sorted(self.manager.uploads.IMAGE_EXTENSIONS),
-                        "subtitle": sorted(self.manager.uploads.SUBTITLE_EXTENSIONS),
-                    },
-                }
-            )
-            return
-        if parts[:3] == ["api", "v1", "sources"] and len(parts) == 4 and parts[3] == "image":
-            query = parse_qs(parsed.query)
-            source_dir = query.get("directory", [""])[0]
-            name = query.get("name", [""])[0]
-            if not source_dir or not name:
-                raise HttpRequestError(400, "'directory' and 'name' are required")
-            image = self.manager.source_image(source_dir, name)
-            content_type = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
-            self._send_bytes(image.read_bytes(), content_type)
-            return
-        if len(parts) < 4:
-            raise HttpRequestError(404, "Resource not found")
-        job_id = parts[3]
-        if len(parts) == 4:
-            self._send_json(self.manager.describe(job_id))
-            return
-        if len(parts) == 5 and parts[4] == "events":
-            query = parse_qs(parsed.query)
-            try:
-                after = int(query.get("after", ["0"])[0])
-            except ValueError as exc:
-                raise HttpRequestError(400, "'after' must be an integer") from exc
-            if after < 0:
-                raise HttpRequestError(400, "'after' must not be negative")
-            items = self.manager.events(job_id, after)
-            self._send_json({"items": items, "next_after": items[-1]["seq"] if items else after})
-            return
-        if len(parts) == 5 and parts[4] == "download":
-            path = self.manager.output_path(job_id)
-            self.send_response(200)
-            self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Length", str(path.stat().st_size))
-            self.send_header("Content-Disposition", content_disposition(path.name))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            # Stream the finished file; a render can be far larger than memory.
-            try:
-                with path.open("rb") as source:
-                    shutil.copyfileobj(source, self.wfile, DOWNLOAD_CHUNK_BYTES)
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            self.close_connection = True
-            return
-        raise HttpRequestError(404, "Resource not found")
-
-    def _handle_post(self) -> None:
-        parsed = urlsplit(self.path)
-        if parsed.path == "/api/v1/sources/scan":
-            payload = self._read_json()
-            path = payload.get("path")
-            self._send_json(self.manager.scan(path).to_dict())
-            return
-        if parsed.path == "/api/v1/uploads":
-            records = [self.manager.upload(name, content) for name, content in self._read_multipart()]
+        elif pattern == ("api", "v1", "capabilities"):
+            self._send_json(capabilities())
+        elif pattern == ("api", "v1", "sources", "scan"):
+            self._send_json(self.manager.scan(self._read_json().get("path")).to_dict())
+        elif pattern == ("api", "v1", "sources", "image"):
+            self._serve_source_image(parsed.query)
+        elif pattern == ("api", "v1", "uploads"):
+            records = [
+                self.manager.upload(name, content)
+                for name, content in self._read_multipart()
+            ]
             self._send_json({"items": [record.to_dict() for record in records]}, 201)
-            return
-        if parsed.path == "/api/v1/jobs":
-            record = self.manager.submit(self._read_json())
-            self._send_json(self.manager.describe(record.job_id), 202)
-            return
-        raise HttpRequestError(404, "Resource not found")
-
-    def _handle_delete(self) -> None:
-        parts = [unquote(part) for part in urlsplit(self.path).path.split("/") if part]
-        if parts[:3] != ["api", "v1", "jobs"] or len(parts) != 4:
+        elif pattern == ("api", "v1", "jobs"):
+            if self.command == "GET":
+                items = self.manager.list_jobs()
+                self._send_json({"items": items, "total": len(items)})
+            else:
+                record = self.manager.submit(self._read_json())
+                self._send_json(self.manager.describe(record.job_id), 202)
+        elif pattern == ("api", "v1", "jobs", None):
+            if self.command == "DELETE":
+                record = self.manager.cancel(parts[3])
+                self._send_json(self.manager.describe(record.job_id))
+            else:
+                self._send_json(self.manager.describe(parts[3]))
+        elif pattern == ("api", "v1", "jobs", None, "events"):
+            self._send_job_events(parts[3], parsed.query)
+        elif pattern == ("api", "v1", "jobs", None, "download"):
+            self._send_download(parts[3])
+        else:
             raise HttpRequestError(404, "Resource not found")
-        record = self.manager.cancel(parts[3])
-        self._send_json(self.manager.describe(record.job_id))
+
+    def _serve_source_image(self, query_string: str) -> None:
+        query = parse_qs(query_string)
+        source_dir = query.get("directory", [""])[0]
+        name = query.get("name", [""])[0]
+        if not source_dir or not name:
+            raise HttpRequestError(400, "'directory' and 'name' are required")
+        image = self.manager.source_image(source_dir, name)
+        content_type = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
+        self._send_bytes(image.read_bytes(), content_type)
+
+    def _send_job_events(self, job_id: str, query_string: str) -> None:
+        query = parse_qs(query_string)
+        try:
+            after = int(query.get("after", ["0"])[0])
+        except ValueError as exc:
+            raise HttpRequestError(400, "'after' must be an integer") from exc
+        if after < 0:
+            raise HttpRequestError(400, "'after' must not be negative")
+        items = self.manager.events(job_id, after)
+        self._send_json({"items": items, "next_after": items[-1]["seq"] if items else after})
+
+    def _send_download(self, job_id: str) -> None:
+        path = self.manager.output_path(job_id)
+        self.send_response(200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Content-Disposition", content_disposition(path.name))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        # Stream the finished file; a render can be far larger than memory.
+        try:
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, DOWNLOAD_CHUNK_BYTES)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
+    def _respond(self, failure: str) -> None:
+        """Run one request and map service errors onto HTTP status codes."""
+        try:
+            self._dispatch()
+        except HttpRequestError as exc:
+            self._send_error(exc.status, exc.message, exc.details)
+        except NotFoundError as exc:
+            self._send_error(404, str(exc))
+        except RequestValidationError as exc:
+            self._send_error(422, str(exc), exc.details)
+        except ServiceError as exc:
+            self._send_error(409, str(exc))
+        except OSError as exc:
+            self._send_error(500, f"{failure}: {exc}")
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
-        try:
-            self._handle_get()
-        except HttpRequestError as exc:
-            self._send_error(exc.status, exc.message, exc.details)
-        except NotFoundError as exc:
-            self._send_error(404, str(exc))
-        except RequestValidationError as exc:
-            self._send_error(422, str(exc), exc.details)
-        except ServiceError as exc:
-            self._send_error(409, str(exc))
-        except OSError as exc:
-            self._send_error(500, f"Could not read resource: {exc}")
+        self._respond("Could not read resource")
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
-        try:
-            self._handle_post()
-        except HttpRequestError as exc:
-            self._send_error(exc.status, exc.message, exc.details)
-        except RequestValidationError as exc:
-            self._send_error(422, str(exc), exc.details)
-        except NotFoundError as exc:
-            self._send_error(404, str(exc))
-        except ServiceError as exc:
-            self._send_error(409, str(exc))
-        except OSError as exc:
-            self._send_error(500, f"Could not store resource: {exc}")
+        self._respond("Could not store resource")
 
     def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler API
-        try:
-            self._handle_delete()
-        except HttpRequestError as exc:
-            self._send_error(exc.status, exc.message, exc.details)
-        except NotFoundError as exc:
-            self._send_error(404, str(exc))
-        except ServiceError as exc:
-            self._send_error(409, str(exc))
-        except OSError as exc:
-            self._send_error(500, f"Could not clean up cancelled job: {exc}")
+        self._respond("Could not clean up cancelled job")
 
 
 def create_server(

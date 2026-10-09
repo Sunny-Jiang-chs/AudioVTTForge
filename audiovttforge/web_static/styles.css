@@ -30,7 +30,7 @@ button, a, label { cursor: pointer; }
 .brand-lockup { gap: 12px; }
 .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #4aa48f; border-radius: 7px; color: var(--accent-strong); font-size: 12px; font-weight: 800; letter-spacing: .04em; background: #142920; }
 .brand-name { font-size: 14px; font-weight: 700; letter-spacing: .02em; }
-.brand-caption, .intro-copy, .field-note, .footer, .drop-hint, .empty-state small { color: var(--muted); }
+.brand-caption, .intro-copy, .field-note, .footer { color: var(--muted); }
 .brand-caption { margin-top: 1px; font-size: 11px; }
 .service-status { gap: 8px; color: var(--muted-strong); font-size: 12px; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 4px rgba(237, 189, 112, .1); }
@@ -85,8 +85,6 @@ h1 { max-width: 760px; margin-bottom: 12px; font-size: clamp(25px, 3vw, 38px); l
 .scan-item .file-badge { grid-row: span 2; width: 27px; height: 27px; }
 .scan-item-name { min-width: 0; overflow: hidden; color: var(--muted-strong); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .scan-item-meta { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.scan-item.is-warning .file-badge { color: #f0cb8f; background: #3b2f1e; }
-.scan-item.is-warning .scan-item-meta { color: #e7c992; }
 .scan-list-empty { padding: 10px 2px; color: var(--muted); font-size: 11px; }
 .assignment-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(128px, 1.05fr); align-items: center; gap: 9px; min-height: 52px; padding: 7px; border-radius: 5px; background: #151d26; }
 .assignment-info { display: grid; min-width: 0; gap: 3px; }
@@ -95,22 +93,7 @@ h1 { max-width: 760px; margin-bottom: 12px; font-size: clamp(25px, 3vw, 38px); l
 .assignment-subtitle.is-warning { color: #e7c992; }
 .assignment-select { width: 100%; min-height: 34px; padding: 0 8px; border: 1px solid var(--line-light); border-radius: 5px; outline: none; color: var(--muted-strong); background: #10161e; font-size: 11px; }
 .assignment-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(112, 213, 189, .09); }
-.drop-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 0 24px; }
-.drop-zone { display: flex; min-height: 143px; flex-direction: column; align-items: flex-start; justify-content: center; gap: 5px; padding: 18px; border: 1px dashed #3b4b5b; border-radius: 7px; background: var(--surface-soft); transition: border-color .18s, background .18s, transform .18s; }
-.drop-zone:hover, .drop-zone:focus-within { border-color: var(--accent); background: #14211f; transform: translateY(-1px); }
-.drop-zone input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.drop-icon { color: var(--accent); font-size: 25px; line-height: 1; }
-.drop-title { margin-top: 8px; font-weight: 700; }
-.drop-hint { font-size: 11px; }
-.drop-action { margin-top: 7px; color: var(--accent-strong); font-size: 12px; font-weight: 700; }
-.file-list { display: grid; gap: 6px; min-height: 66px; padding: 16px 24px 0; }
-.empty-state { display: grid; grid-template-columns: 24px 1fr; align-items: center; column-gap: 8px; padding: 10px 2px; color: var(--muted-strong); }
-.empty-state small { grid-column: 2; margin-top: 1px; font-size: 11px; }
-.empty-glyph { color: var(--accent); font-size: 20px; }
-.file-item { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 42px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: #111820; }
 .file-badge { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 5px; color: var(--accent-strong); background: #173027; font-size: 10px; font-weight: 800; text-transform: uppercase; }
-.file-name { min-width: 0; overflow: hidden; color: var(--muted-strong); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.file-kind { color: var(--muted); font-size: 11px; }
 .field-note { margin: 14px 24px 22px; font-size: 11px; }
 code { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 
@@ -133,7 +116,6 @@ code { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, C
 .subtitle-preview-placeholder { position: absolute; inset: 0; display: grid; place-items: center; padding: 12px; color: var(--muted); font-size: 11px; text-align: center; }
 .subtitle-preview-placeholder[hidden] { display: none; }
 #subtitle-preview { position: absolute; z-index: 1; right: 4%; bottom: 4.44%; left: 4%; color: #fff; font-weight: 500; line-height: 1.2; overflow-wrap: anywhere; text-align: center; }
-.subtitle-preview-note { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .settings-summary { display: grid; gap: 9px; padding: 16px 24px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--surface-soft); }
 .settings-summary div { display: flex; justify-content: space-between; gap: 15px; color: var(--muted); font-size: 11px; }
 .settings-summary strong { color: var(--muted-strong); font-size: 11px; font-weight: 600; }
@@ -147,6 +129,7 @@ code { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, C
 .job-heading { padding-bottom: 14px; }
 .job-heading-actions { display: flex; align-items: center; gap: 9px; }
 .job-state { padding: 5px 9px; border: 1px solid var(--line-light); border-radius: 999px; }
+.job-state[data-state="idle"], .job-state[data-state="queued"] { color: var(--muted-strong); border-color: var(--line-light); background: var(--surface-soft); }
 .job-state[data-state="running"] { color: var(--accent-strong); border-color: #3b7769; background: #142a25; }
 .job-state[data-state="succeeded"] { color: var(--accent-strong); border-color: #3b7769; background: #142a25; }
 .job-state[data-state="failed"] { color: var(--danger); border-color: #774747; background: #2a1818; }
@@ -201,8 +184,6 @@ code { color: var(--accent-strong); font-family: ui-monospace, SFMono-Regular, C
   .scan-grid { grid-template-columns: 1fr; }
   .scan-group:first-child { grid-row: auto; }
   .assignment-row { grid-template-columns: 1fr; gap: 6px; }
-  .drop-grid { grid-template-columns: 1fr; padding: 0 17px; }
-  .file-list { padding-left: 17px; padding-right: 17px; }
   .field-stack { padding-left: 17px; padding-right: 17px; }
   .subtitle-preview-block { margin-left: 17px; margin-right: 17px; }
   .field-note { margin-left: 17px; margin-right: 17px; }

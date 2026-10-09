@@ -64,6 +64,7 @@ python .\audio_vtt_to_mp4_gui.py
 ```text
 GET  /api/v1/health
 GET  /api/v1/capabilities
+GET  /api/v1/jobs
 POST /api/v1/sources/scan
 GET  /api/v1/sources/image?directory={path}&name={filename}
 POST /api/v1/uploads
@@ -74,9 +75,14 @@ GET  /api/v1/jobs/{id}/download
 DELETE /api/v1/jobs/{id}
 ```
 
+`GET /api/v1/capabilities` 给出字幕模式、渲染默认值和可选项，网页的下拉框由它填充，不再各自声明一份默认值。
+`GET /api/v1/jobs` 返回最近的任务列表。
+
 `POST /api/v1/sources/scan` 接收 `{ "path": "D:\\AudioVTT\\episode01" }`，返回目录内按自然顺序整理的
-音频、图片和 VTT/LRC 字幕清单。字幕优先按 `音频文件名.vtt`、`音频文件名.lrc`，再按不带音频扩展名的同名文件匹配。随后 `POST /api/v1/jobs` 可以使用 `{ "source_dir": "..." }` 创建任务，返回
+音频、图片和 VTT/LRC 字幕清单。字幕优先按 `音频文件名.vtt`、`音频文件名.lrc`，再按不带音频扩展名的同名文件匹配。扫描结果里每段音频都带有默认图片分配（`automatic_image`），网页直接展示该结果，不再自行计算分配规则。随后 `POST /api/v1/jobs` 可以使用 `{ "source_dir": "..." }` 创建任务，返回
 `202 Accepted`；前端通过任务资源和事件资源轮询进度。`output_dir` 可指定最终输出目录，省略时本地素材任务默认输出到素材目录；下载资源仍可用于另存副本。
+提交后网页会把任务 id 记录在浏览器会话中，刷新页面会自动接回正在进行的任务并继续显示进度。
+事件资源只保留最近若干条进度行，完整日志仍写入任务目录内的事件文件。
 预览图片资源只提供指定素材目录中已扫描到的图片，供网页进行画面与字幕叠加预览。
 扫描目录时，默认输出名取完整目录路径中最长的目录名片段并添加 `.mp4`；用户可以在渲染前修改。
 渲染开始后可调用 `DELETE /api/v1/jobs/{id}` 取消任务。服务会结束正在运行的 FFmpeg/FFprobe 进程，

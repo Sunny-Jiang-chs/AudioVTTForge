@@ -235,6 +235,48 @@ def test_rest_download_streams_file_with_non_ascii_output_name(tmp_path: Path) -
         manager.shutdown()
 
 
+def test_rest_exposes_capabilities_and_job_collection(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "cover.png").write_bytes(b"image")
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        report = request_json(f"{base_url}/api/v1/capabilities")
+        assert report["defaults"]["subtitle"] == "burnin"
+        assert report["limits"]["workers"] == [1, 10]
+        assert report["options"]["workers"] == list(range(1, 11))
+        assert ".wav" in report["upload_kinds"]["audio"]
+
+        assert request_json(f"{base_url}/api/v1/jobs")["items"] == []
+
+        job = request_json(
+            f"{base_url}/api/v1/jobs",
+            "POST",
+            {"source_dir": str(source), "workers": 1},
+        )
+        listing = request_json(f"{base_url}/api/v1/jobs")
+        assert listing["total"] == 1
+        assert [item["id"] for item in listing["items"]] == [job["id"]]
+
+        try:
+            request_json(f"{base_url}/api/v1/jobs/does-not-exist")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            raise AssertionError("unknown job must be reported as 404")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        manager.shutdown()
+
+
 def test_rest_delete_cancels_running_job_and_cleans_temporary_files(tmp_path: Path) -> None:
     tool = tmp_path / "slow_tool.py"
     tool.write_text(SLOW_TOOL, encoding="utf-8")

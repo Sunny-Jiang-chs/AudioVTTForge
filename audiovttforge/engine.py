@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .job import JobSpec, SUBTITLE_MODES
+from .job import FONT_SIZE_LIMITS, JobSpec, SUBTITLE_MODES
 from .media import find_subtitle, read_subtitle, video_dimensions, write_srt
 
 EventSink = Callable[[dict[str, Any]], None]
@@ -139,8 +139,10 @@ def validate_job(job: JobSpec, check_tools: bool = True) -> list[str]:
         errors.append("Font name must not be empty.")
     elif any(character in job.font_name for character in ",':\\\r\n"):
         errors.append("Font name contains unsupported characters.")
-    if job.font_size < 8 or job.font_size > 144:
-        errors.append("Font size must be between 8 and 144.")
+    if job.font_size < FONT_SIZE_LIMITS[0] or job.font_size > FONT_SIZE_LIMITS[1]:
+        errors.append(
+            f"Font size must be between {FONT_SIZE_LIMITS[0]} and {FONT_SIZE_LIMITS[1]}."
+        )
     if not isinstance(job.font_color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", job.font_color) is None:
         errors.append("Font color must be a #RRGGBB value.")
     for path in job.audio:
