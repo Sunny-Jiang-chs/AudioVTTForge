@@ -340,7 +340,12 @@ def main(argv: list[str] | None = None) -> int:
         help="never launch a browser, even if --open-browser is also given",
     )
     args = parser.parse_args(argv)
-    manager = JobManager(args.data_root or default_data_root())
+    try:
+        manager = JobManager(args.data_root or default_data_root())
+    except (ServiceError, OSError) as exc:
+        # A double-clicked build must say what to fix, not print a traceback.
+        print(f"AudioVTTForge could not start: {exc}", file=sys.stderr, flush=True)
+        return 2
     try:
         server = create_server(args.host, args.port, manager=manager)
     except OSError as exc:

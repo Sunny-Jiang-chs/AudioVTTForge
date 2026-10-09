@@ -301,6 +301,23 @@ def test_static_root_follows_the_frozen_bundle_layout(
         server.server_close()
 
 
+def test_main_explains_an_unusable_data_root_instead_of_dumping_a_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the data root should live", encoding="utf-8")
+
+    code = web_module.main(["--data-root", str(blocker / "data"), "--port", "0"])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "could not start" in captured.err
+    assert "Could not create the data directory" in captured.err
+    assert str(blocker / "data") in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_main_uses_a_free_port_when_the_requested_one_is_busy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

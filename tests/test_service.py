@@ -10,6 +10,7 @@ from audiovttforge.service import (
     JobManager,
     NotFoundError,
     RequestValidationError,
+    ServiceError,
     _suggested_output_name,
     capabilities,
     scan_source_directory,
@@ -401,6 +402,21 @@ def test_engine_failure_is_not_recorded_twice(tmp_path: Path) -> None:
     assert types.count("job_failed") == 1
     assert types[-1] == "job_failed"
     manager.shutdown()
+
+
+def test_job_manager_reports_an_unusable_data_root(tmp_path: Path) -> None:
+    """A blocked data directory must name itself instead of raising a bare OSError."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where the data root should live", encoding="utf-8")
+    target = blocker / "data"
+
+    with pytest.raises(ServiceError) as failure:
+        JobManager(target)
+
+    message = str(failure.value)
+    assert "Could not create the data directory" in message
+    assert str(target) in message
+    assert "--data-root" in message
 
 
 def test_job_manager_reclaims_stale_caches_on_start(tmp_path: Path) -> None:
