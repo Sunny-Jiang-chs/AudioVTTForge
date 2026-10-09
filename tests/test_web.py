@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 import urllib.error
@@ -6,6 +7,9 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlencode
 
+import pytest
+
+from audiovttforge import web as web_module
 from audiovttforge.service import JobManager
 from audiovttforge.web import AudioVTTForgeServer
 
@@ -275,6 +279,55 @@ def test_rest_exposes_capabilities_and_job_collection(tmp_path: Path) -> None:
         server.server_close()
         thread.join(timeout=5)
         manager.shutdown()
+
+
+def test_static_root_follows_the_frozen_bundle_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "bundle"
+    assets = bundle / "audiovttforge" / "web_static"
+    assets.mkdir(parents=True)
+    (assets / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    monkeypatch.setattr(web_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(web_module.sys, "_MEIPASS", str(bundle), raising=False)
+
+    assert web_module.static_root() == assets
+    server = web_module.create_server("127.0.0.1", 0, tmp_path / "data")
+    try:
+        assert server.static_root == assets.resolve()
+    finally:
+        server.server_close()
+
+
+def test_main_uses_a_free_port_when_the_requested_one_is_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    busy_port = blocker.getsockname()[1]
+    served: list[int] = []
+
+    def fake_serve_forever(self: AudioVTTForgeServer, poll_interval: float = 0.5) -> None:
+        served.append(self.server_address[1])
+
+    monkeypatch.setattr(AudioVTTForgeServer, "serve_forever", fake_serve_forever)
+    # shutdown() would block because serve_forever never set its event.
+    monkeypatch.setattr(AudioVTTForgeServer, "shutdown", lambda self: None)
+    try:
+        assert web_module.main(
+            ["--host", "127.0.0.1", "--port", str(busy_port), "--data-root", str(tmp_path / "data")]
+        ) == 0
+    finally:
+        blocker.close()
+
+    output = capsys.readouterr().out
+    assert "unavailable" in output
+    assert served and served[0] != busy_port
 
 
 def test_rest_delete_cancels_running_job_and_cleans_temporary_files(tmp_path: Path) -> None:

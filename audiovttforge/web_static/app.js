@@ -485,7 +485,7 @@ async function pollJob() {
     if (job.state === "cancelled") {
       state.cancelPending = false;
       setJobState("cancelled", "已取消");
-      $("job-summary").textContent = "任务进程已停止，临时文件已清理；素材和当前设置已保留。";
+      $("job-summary").textContent = "任务进程已停止，临时文件已清理，素材目录未被修改。";
       $("result-row").hidden = true;
       $("start-button").disabled = false;
       $("cancel-button").hidden = true;
@@ -584,10 +584,15 @@ async function restoreJob() {
   $("cancel-button").hidden = false;
   setJobState("queued", "恢复中");
   $("job-summary").textContent = "正在恢复上次的渲染任务…";
+  // Ask the collection instead of probing the id directly: an id that no longer
+  // exists would answer 404 and log a network error in the browser console.
+  let listing = null;
   try {
-    await parseResponse(await fetch(`/api/v1/jobs/${jobId}`));
+    listing = await parseResponse(await fetch("/api/v1/jobs"));
   } catch (_error) {
-    // The service restarted or the cache was reclaimed: the handle is stale.
+    listing = null; // service unreachable: let the poll loop report it
+  }
+  if (listing && !(listing.items || []).some((job) => job.id === jobId)) {
     forgetJob();
     state.jobId = null;
     $("start-button").disabled = false;

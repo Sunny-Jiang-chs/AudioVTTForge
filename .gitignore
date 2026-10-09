@@ -16,6 +16,9 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
+# Local scratch space (test media, browser-harness output, verification data)
+tmp/
+
 # Editor and OS files
 .idea/
 .vscode/

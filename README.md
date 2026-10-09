@@ -136,6 +136,23 @@ dist\AudioVTTForge\AudioVTTForge.exe
 
 目录版不需要在启动时解包到 `%TEMP%`，适合日常使用。若确实需要单文件版本，可以执行 `.\build.ps1 -Mode onefile`；单文件版本依赖可写的 `%TEMP%`。构建会先生成到 `dist` 下的临时目录，再重试替换旧目录；若旧版 GUI 正在运行导致替换失败，脚本会保留新构建并报告其路径。
 
+浏览器界面的打包版本使用另一个目标：
+
+```powershell
+.\build.ps1 -Target web
+```
+
+```text
+dist\AudioVTTForgeWeb\AudioVTTForgeWeb.exe
+```
+
+这个产物是**控制台形态**：双击后自动在默认浏览器打开界面，关闭控制台窗口即停止服务（与 `start_web.bat` 的行为一致）。
+它刻意不加 `--windowed`——否则服务在后台运行却没有窗口也没有控制台，用户只能去任务管理器结束进程。
+`web_static` 通过 `--add-data` 打进产物；缺少这一步，冻结后的 `/assets/*` 会返回 404、页面空白。
+若默认端口被占用，程序会改用空闲端口并在控制台打印实际地址。
+
+发布校验不需要真机/模拟器，只需构建成功、产物里存在 `audiovttforge/web_static/index.html`，并确认启动后 `GET /api/v1/health` 返回 `ok`。
+
 ## 输入文件命名
 
 VTT 字幕可使用以下命名方式：

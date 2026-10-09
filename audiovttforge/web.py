@@ -6,7 +6,9 @@ import argparse
 import json
 import mimetypes
 import shutil
+import sys
 import threading
+import webbrowser
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -297,13 +299,29 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
         self._respond("Could not clean up cancelled job")
 
 
+def static_root() -> Path:
+    """Locate the browser assets in both source and PyInstaller layouts.
+
+    A frozen build keeps them at ``<bundle>/audiovttforge/web_static`` (see the
+    ``--add-data`` entry in build.ps1), which is not what ``__file__`` points at.
+    """
+    if getattr(sys, "frozen", False):
+        bundle = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return bundle / "audiovttforge" / "web_static"
+    return Path(__file__).with_name("web_static")
+
+
 def create_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     root: Path | None = None,
+    manager: JobManager | None = None,
 ) -> AudioVTTForgeServer:
-    static_root = Path(__file__).with_name("web_static")
-    return AudioVTTForgeServer((host, port), JobManager(root or default_data_root()), static_root)
+    return AudioVTTForgeServer(
+        (host, port),
+        manager or JobManager(root or default_data_root()),
+        static_root(),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -311,9 +329,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="open the UI in the default browser once the service is listening",
+    )
+    parser.add_argument(
+        "--no-open-browser",
+        action="store_true",
+        help="never launch a browser, even if --open-browser is also given",
+    )
     args = parser.parse_args(argv)
-    server = create_server(args.host, args.port, args.data_root)
-    print(f"AudioVTTForge web UI: http://{args.host}:{args.port}/", flush=True)
+    manager = JobManager(args.data_root or default_data_root())
+    try:
+        server = create_server(args.host, args.port, manager=manager)
+    except OSError as exc:
+        if args.port == 0:
+            raise
+        # A second instance (or another program) already owns the port; keep the
+        # packaged build usable instead of exiting with a bare traceback.
+        print(f"Port {args.port} is unavailable ({exc}); using a free port instead.", flush=True)
+        server = create_server(args.host, 0, manager=manager)
+    port = server.server_address[1]
+    url = f"http://{args.host}:{port}/"
+    print(f"AudioVTTForge web UI: {url}", flush=True)
+    if args.open_browser and not args.no_open_browser:
+        # The socket is already listening, so the browser can connect immediately.
+        webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
