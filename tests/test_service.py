@@ -433,6 +433,54 @@ def test_job_manager_keeps_recent_uploads(tmp_path: Path) -> None:
     manager.shutdown()
 
 
+def test_cancel_removes_a_job_that_never_started(tmp_path: Path) -> None:
+    """Jobs run one at a time, so a queued job must be cancellable before it runs."""
+    tool = tmp_path / "slow_tool.py"
+    tool.write_text(SLOW_TOOL, encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "cover.png").write_bytes(b"image")
+    manager = JobManager(tmp_path / "data")
+
+    def submit() -> object:
+        return manager.submit(
+            {
+                "source_dir": str(source),
+                "workers": 1,
+                "ffmpeg": str(tool),
+                "ffprobe": str(tool),
+            }
+        )
+
+    running = submit()
+    queued = submit()
+    try:
+        work = running.job.output.parent / f".{running.job.output.stem}_parallel_work"
+        started = work / "0000.started"
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not started.exists():
+            time.sleep(0.02)
+        assert started.is_file(), "the first job never started"
+        assert manager.get(queued.job_id).state == "queued"
+        assert queued.root.is_dir()
+
+        cancelled = manager.cancel(queued.job_id)
+
+        assert cancelled.state == "cancelled"
+        assert cancelled.to_dict()["cancelable"] is False
+        assert not queued.root.exists()
+        assert [event["type"] for event in manager.events(queued.job_id)] == [
+            "job_queued",
+            "job_cancelled",
+        ]
+        # Cancelling the queued job must not disturb the running one.
+        assert manager.get(running.job_id).state == "running"
+    finally:
+        manager.cancel(running.job_id)
+        manager.shutdown()
+
+
 def test_source_scan_matches_lrc_for_mp3(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
