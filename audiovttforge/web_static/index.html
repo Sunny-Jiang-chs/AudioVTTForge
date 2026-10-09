@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10151d">
+  <title>AudioVTTForge · 本地渲染台</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">AV</div>
+        <div>
+          <div class="brand-name">AudioVTTForge</div>
+          <div class="brand-caption">本地媒体渲染台</div>
+        </div>
+      </div>
+      <div class="service-status" id="service-status" data-state="checking">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="service-status-text">正在连接服务</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="intro-band" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">LOCAL RENDER WORKSPACE</p>
+          <h1 id="page-title">把音频、字幕和画面合成一个可下载的视频任务。</h1>
+          <p class="intro-copy">浏览器负责提交资源和查看进度，渲染仍在本机执行。你的素材不会离开这台电脑。</p>
+        </div>
+        <div class="intro-meta">
+          <span class="meta-label">API</span>
+          <span class="meta-value">v1 · 127.0.0.1</span>
+        </div>
+      </section>
+
+      <div class="content-grid">
+        <section class="panel assets-panel" aria-labelledby="assets-title">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">01 / 素材</p>
+              <h2 id="assets-title">输入素材目录</h2>
+            </div>
+            <span class="panel-count" id="asset-count">0 个文件</span>
+          </div>
+
+          <div class="path-field">
+            <label class="field" for="source-dir">
+              <span>本地素材目录</span>
+              <div class="path-input-row">
+                <input id="source-dir" type="text" placeholder="例如 D:\\AudioVTT\\episode01" autocomplete="off" spellcheck="false">
+                <button class="secondary-button" id="scan-button" type="button">
+                  <span aria-hidden="true">⌕</span>
+                  <span>扫描目录</span>
+                </button>
+              </div>
+            </label>
+            <p class="field-note">服务只读取本机目录的第一层文件；音频按数字自然排序，字幕按 <code>音频文件名.vtt</code> 匹配。</p>
+          </div>
+
+          <div class="scan-status" id="scan-status" role="status">输入目录路径后扫描，结果会显示在这里。</div>
+          <div class="scan-preview" id="scan-preview" hidden>
+            <div class="scan-overview" id="scan-overview"></div>
+            <div class="scan-warning" id="scan-warning" hidden>
+              <strong>需要注意</strong>
+              <ul id="scan-warning-list"></ul>
+            </div>
+            <div class="scan-grid">
+              <section class="scan-group" aria-labelledby="scan-audio-title">
+                <div class="scan-group-heading"><h3 id="scan-audio-title">音频 / 图片分配</h3><span id="scan-audio-count"></span></div>
+                <div class="scan-list" id="scan-audio-list"></div>
+              </section>
+              <section class="scan-group" aria-labelledby="scan-image-title">
+                <div class="scan-group-heading"><h3 id="scan-image-title">画面图片</h3><span id="scan-image-count"></span></div>
+                <div class="scan-list" id="scan-image-list"></div>
+              </section>
+              <section class="scan-group" aria-labelledby="scan-subtitle-title">
+                <div class="scan-group-heading"><h3 id="scan-subtitle-title">目录中的字幕</h3><span id="scan-subtitle-count"></span></div>
+                <div class="scan-list" id="scan-subtitle-list"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel settings-panel" aria-labelledby="settings-title">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">02 / 参数</p>
+              <h2 id="settings-title">输出设置</h2>
+            </div>
+          </div>
+
+          <div class="field-stack">
+            <label class="field">
+              <span>输出文件名</span>
+              <input id="output-name" type="text" value="result.mp4" spellcheck="false">
+            </label>
+            <div class="field-row">
+              <label class="field">
+                <span>字幕模式</span>
+                <select id="subtitle-mode">
+                  <option value="burnin">烧录到画面</option>
+                  <option value="embedded">嵌入字幕轨</option>
+                  <option value="none">不处理字幕</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>帧率</span>
+                <select id="fps">
+                  <option value="1">1 fps</option>
+                  <option value="2" selected>2 fps</option>
+                  <option value="5">5 fps</option>
+                  <option value="10">10 fps</option>
+                  <option value="24">24 fps</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                <span>画面宽度</span>
+                <select id="width">
+                  <option value="1080">1080 px</option>
+                  <option value="1280">1280 px</option>
+                  <option value="1920" selected>1920 px</option>
+                  <option value="2560">2560 px</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>并行任务</span>
+                <select id="workers">
+                  <option value="1">1 个</option>
+                  <option value="2" selected>2 个</option>
+                  <option value="3">3 个</option>
+                  <option value="4">4 个</option>
+                  <option value="5">5 个</option>
+                  <option value="6">6 个</option>
+                  <option value="7">7 个</option>
+                  <option value="8">8 个</option>
+                  <option value="9">9 个</option>
+                  <option value="10">10 个</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                <span>字幕字体</span>
+                <select id="font-name">
+                  <option value="Microsoft YaHei" selected>微软雅黑</option>
+                  <option value="SimSun">宋体</option>
+                  <option value="SimHei">黑体</option>
+                  <option value="Yu Gothic">游ゴシック</option>
+                  <option value="Arial">Arial</option>
+                  <option value="Segoe UI">Segoe UI</option>
+                  <option value="Noto Sans CJK SC">Noto Sans CJK SC</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>字幕字号</span>
+                <select id="font-size">
+                  <option value="24">24 px</option>
+                  <option value="32">32 px</option>
+                  <option value="42" selected>42 px</option>
+                  <option value="48">48 px</option>
+                  <option value="56">56 px</option>
+                  <option value="64">64 px</option>
+                </select>
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field color-field">
+                <span>字幕颜色</span>
+                <input id="font-color" type="color" value="#FFFFFF" aria-label="字幕颜色">
+              </label>
+            </div>
+          </div>
+
+          <div class="subtitle-preview-block" aria-labelledby="subtitle-preview-title">
+            <div class="subtitle-preview-heading">
+              <strong id="subtitle-preview-title">画面与字幕预览</strong>
+              <span id="subtitle-preview-meta">微软雅黑 · 42 px · #FFFFFF</span>
+            </div>
+            <label class="field preview-image-field">
+              <span>预览图片</span>
+              <select id="preview-image-select" disabled aria-label="选择预览图片">
+                <option value="">扫描目录后选择图片</option>
+              </select>
+            </label>
+            <label class="field preview-text-field">
+              <span>预览文字</span>
+              <input id="subtitle-preview-text" type="text" value="这是字幕样式预览" maxlength="80">
+            </label>
+            <div class="subtitle-preview-stage" id="subtitle-preview-stage">
+              <img id="subtitle-preview-image" alt="当前预览图片" hidden>
+              <span class="subtitle-preview-placeholder" id="subtitle-preview-placeholder">扫描素材目录后可预览导入图片</span>
+              <span id="subtitle-preview">这是字幕样式预览</span>
+            </div>
+          </div>
+
+          <div class="settings-summary">
+            <div><span>输出比例</span><strong>16:9</strong></div>
+            <div><span>输出容器</span><strong>MP4 / H.264</strong></div>
+            <div><span>处理位置</span><strong>本机</strong></div>
+          </div>
+          <button class="primary-button" id="start-button" type="button" disabled>
+            <span aria-hidden="true">▶</span>
+            <span>开始渲染</span>
+          </button>
+          <p class="form-error" id="form-error" role="alert"></p>
+        </section>
+      </div>
+
+      <section class="panel job-panel" aria-labelledby="job-title">
+        <div class="panel-heading job-heading">
+          <div>
+            <p class="section-kicker">03 / 任务</p>
+            <h2 id="job-title">任务状态</h2>
+          </div>
+          <div class="job-heading-actions">
+            <div class="job-state" id="job-state" data-state="idle">等待提交</div>
+            <button class="cancel-button" id="cancel-button" type="button" hidden>
+              <span aria-hidden="true">×</span>
+              <span>取消任务</span>
+            </button>
+          </div>
+        </div>
+        <div class="progress-row">
+          <div class="progress-track" aria-label="任务进度"><span id="progress-bar"></span></div>
+          <strong id="progress-value">0%</strong>
+        </div>
+        <div class="job-summary" id="job-summary">
+          <span>选择素材后开始一个新任务</span>
+        </div>
+        <div class="event-table-wrap" id="event-table-wrap">
+          <table class="event-table">
+            <thead>
+              <tr><th>时间</th><th>事件</th><th>详情</th></tr>
+            </thead>
+            <tbody id="event-list">
+              <tr class="event-empty"><td colspan="3">任务事件会显示在这里</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="result-row" id="result-row" hidden>
+          <div>
+            <span class="result-label">渲染完成</span>
+            <strong id="result-name">result.mp4</strong>
+          </div>
+          <a class="download-button" id="download-button" href="#" download>
+            <span aria-hidden="true">↓</span> 下载 MP4
+          </a>
+        </div>
+      </section>
+    </main>
+    <footer class="footer"><span>AudioVTTForge</span><span>所有处理均在本机完成</span></footer>
+  </div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

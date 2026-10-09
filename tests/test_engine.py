@@ -64,6 +64,13 @@ def test_engine_runs_without_gui(tmp_path: Path) -> None:
     assert event_types[0] == "job_started"
     assert "task_finished" in event_types
     assert event_types[-1] == "job_finished"
+    task_started = next(event for event in events if event["type"] == "task_started")
+    video_filter = task_started["command"][task_started["command"].index("-vf") + 1]
+    assert "subtitles=" in video_filter
+    assert "0000.srt" in video_filter
+    assert "FontName=Microsoft YaHei" in video_filter
+    assert "FontSize=42" in video_filter
+    assert "PrimaryColour=&H00FFFFFF" in video_filter
     logged_types = [
         json.loads(line)["type"]
         for line in result.events.read_text(encoding="utf-8").splitlines()
@@ -95,6 +102,51 @@ def test_embedded_subtitle_input_precedes_output_options(tmp_path: Path) -> None
     assert command.index("-map") < command.index("-vf")
     assert command.index("2:0") < command.index("-vf")
     assert command.index("-c:s") < command.index("-movflags")
+
+
+def test_burnin_subtitle_style_uses_job_settings(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    base_job = make_job(tmp_path, tool)
+    job = JobSpec(**{
+        **base_job.__dict__,
+        "font_name": "Arial",
+        "font_size": 56,
+        "font_color": "#12ABEF",
+    })
+    subtitle_path = tmp_path / "01.wav.srt"
+    subtitle_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+    command = RenderEngine()._render_command(
+        job,
+        index=0,
+        duration=1.25,
+        segment=tmp_path / "segment.mp4",
+        subtitle_path=subtitle_path,
+    )
+
+    video_filter = command[command.index("-vf") + 1]
+    assert "FontName=Arial" in video_filter
+    assert "FontSize=56" in video_filter
+    assert "PrimaryColour=&H00EFAB12" in video_filter
+
+
+def test_validate_job_rejects_unsafe_subtitle_style(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    base_job = make_job(tmp_path, tool)
+    job = JobSpec(**{
+        **base_job.__dict__,
+        "font_name": "Arial,Injected",
+        "font_size": 200,
+        "font_color": "red",
+    })
+
+    errors = validate_job(job, check_tools=False)
+
+    assert any("Font name" in error for error in errors)
+    assert any("Font size" in error for error in errors)
+    assert any("Font color" in error for error in errors)
 
 
 def test_merge_preserves_all_streams() -> None:
@@ -226,3 +278,6 @@ def test_engine_allows_missing_vtt_and_renders_without_subtitles(tmp_path: Path)
     assert result.output.is_file()
     assert "subtitle_missing" in [event["type"] for event in events]
     assert not (result.work / "0000.srt").exists()
+    task_started = next(event for event in events if event["type"] == "task_started")
+    video_filter = task_started["command"][task_started["command"].index("-vf") + 1]
+    assert "subtitles=" not in video_filter
