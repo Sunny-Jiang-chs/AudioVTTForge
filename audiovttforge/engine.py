@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .job import JobSpec, SUBTITLE_MODES
-from .media import read_vtt, video_dimensions, write_srt
+from .media import find_subtitle, read_subtitle, video_dimensions, write_srt
 
 EventSink = Callable[[dict[str, Any]], None]
 
@@ -167,7 +167,7 @@ def plan_job(job: JobSpec) -> dict[str, Any]:
                 "index": index,
                 "audio": str(audio),
                 "image": str(image) if image else None,
-                "vtt": str(audio.with_name(audio.name + ".vtt")),
+                "subtitle": str(find_subtitle(audio)) if find_subtitle(audio) else None,
                 "segment": f"{index:04d}.mp4",
                 "duration": "probe-at-run-time",
             }
@@ -238,10 +238,10 @@ class RenderEngine:
             "-i",
             str(audio),
         ]
-        vtt_path = self._subtitle_path(audio)
-        has_vtt = vtt_path.is_file()
-        if job.subtitle == "embedded" and has_vtt:
-            args += ["-i", str(vtt_path)]
+        subtitle_file = subtitle_path or find_subtitle(audio)
+        has_subtitle = subtitle_file is not None
+        if job.subtitle == "embedded" and has_subtitle:
+            args += ["-i", str(subtitle_file)]
         args += [
             "-map",
             "0:v:0",
@@ -256,7 +256,7 @@ class RenderEngine:
                 f"PrimaryColour={_ass_color(job.font_color)},Outline=2,Shadow=1,"
                 "Alignment=2,MarginV=48'"
             )
-        elif job.subtitle == "embedded" and has_vtt:
+        elif job.subtitle == "embedded" and has_subtitle:
             args += ["-map", "2:0"]
         args += [
             "-vf",
@@ -282,14 +282,10 @@ class RenderEngine:
             "-t",
             f"{duration:.3f}",
         ]
-        if job.subtitle == "embedded" and has_vtt:
+        if job.subtitle == "embedded" and has_subtitle:
             args += ["-c:s", "mov_text"]
         args += ["-movflags", "+faststart", str(segment)]
         return _tool_command(job.ffmpeg, args)
-
-    @staticmethod
-    def _subtitle_path(audio: Path) -> Path:
-        return audio.with_name(audio.name + ".vtt")
 
     def _probe(self, job: JobSpec, audio: Path, events: EventLog) -> float:
         self._check_cancelled()
@@ -354,18 +350,21 @@ class RenderEngine:
             events.emit("task_skipped", index=index, audio=str(audio), segment=str(segment))
             return segment
 
-        vtt_path = self._subtitle_path(audio)
-        has_vtt = vtt_path.is_file()
+        subtitle_path = find_subtitle(audio)
+        has_subtitle = subtitle_path is not None
         srt_path: Path | None = None
-        if job.subtitle == "burnin" and has_vtt:
+        if has_subtitle and (
+            job.subtitle == "burnin"
+            or (job.subtitle == "embedded" and subtitle_path.suffix.lower() == ".lrc")
+        ):
             srt_path = work / f"{index:04d}.srt"
-            write_srt(read_vtt(vtt_path), srt_path)
-        elif job.subtitle != "none" and not has_vtt:
+            write_srt(read_subtitle(subtitle_path, round(duration * 1000)), srt_path)
+        elif job.subtitle != "none" and not has_subtitle:
             events.emit(
                 "subtitle_missing",
                 index=index,
                 audio=str(audio),
-                vtt=str(vtt_path),
+                subtitle=str(audio.with_name(audio.stem + ".vtt")),
             )
         command = self._render_command(job, index, duration, segment, srt_path)
         log_path = work / f"{index:04d}.log"

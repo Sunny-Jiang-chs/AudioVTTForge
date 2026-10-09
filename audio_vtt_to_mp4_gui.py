@@ -22,7 +22,12 @@ except ImportError:
 
 from audiovttforge.engine import RenderEngine, validate_job
 from audiovttforge.job import JobSpec, default_ffmpeg, default_ffprobe
-from audiovttforge.media import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, automatic_image_index
+from audiovttforge.media import (
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    automatic_image_index,
+    find_subtitle,
+)
 
 CONFIG = (
     Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
@@ -313,10 +318,10 @@ class App:
     def _refresh(self) -> None:
         self.audio_list.delete(0, tk.END)
         for path in self.audio:
-            has_vtt = path.with_name(path.name + ".vtt").is_file()
+            subtitle = find_subtitle(path)
             self.audio_list.insert(
                 tk.END,
-                f"{path.name}  {'VTT OK' if has_vtt else '缺 VTT'}",
+                f"{path.name}  {'字幕 OK' if subtitle else '缺字幕'}",
             )
         self.image_list.delete(0, tk.END)
         for path in self.images:
@@ -681,9 +686,7 @@ class App:
                     self.status.set(f"已读取：{Path(str(event['audio'])).name}")
                 elif event_type == "task_started":
                     index = int(event["index"])
-                    subtitle = "有字幕" if Path(str(event["audio"])).with_name(
-                        Path(str(event["audio"])).name + ".vtt"
-                    ).is_file() else "无字幕"
+                    subtitle = "有字幕" if find_subtitle(Path(str(event["audio"]))) else "无字幕"
                     self.task_table.item(
                         str(index),
                         values=("处理中", "0%", f"{Path(str(event['audio'])).name}  [{subtitle}]"),

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from audiovttforge.engine import EngineError, RenderEngine, _tool_environment, validate_job
+from audiovttforge.engine import EngineError, RenderEngine, _tool_environment, plan_job, validate_job
 from audiovttforge.job import JobSpec
 
 
@@ -71,6 +71,7 @@ def test_engine_runs_without_gui(tmp_path: Path) -> None:
     assert "FontName=Microsoft YaHei" in video_filter
     assert "FontSize=42" in video_filter
     assert "PrimaryColour=&H00FFFFFF" in video_filter
+    assert plan_job(job)["tasks"][0]["subtitle"].endswith("01.wav.vtt")
     logged_types = [
         json.loads(line)["type"]
         for line in result.events.read_text(encoding="utf-8").splitlines()
@@ -102,6 +103,45 @@ def test_embedded_subtitle_input_precedes_output_options(tmp_path: Path) -> None
     assert command.index("-map") < command.index("-vf")
     assert command.index("2:0") < command.index("-vf")
     assert command.index("-c:s") < command.index("-movflags")
+
+
+def test_engine_converts_lrc_for_burnin_and_embedded_modes(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    audio = tmp_path / "01.mp3"
+    audio.write_bytes(b"audio")
+    (tmp_path / "01.lrc").write_text("[00:00.00]hello\n[00:01.00]world", encoding="utf-8")
+    image = tmp_path / "cover.png"
+    image.write_bytes(b"image")
+    base_job = JobSpec(
+        audio=(audio,), images=(image,), assignments=(0,), output=tmp_path / "burned.mp4",
+        workers=1, ffmpeg=tool, ffprobe=tool,
+    )
+
+    burned = RenderEngine().run(base_job, keep_work=True)
+    converted = (burned.work / "0000.srt").read_text(encoding="utf-8")
+    assert "hello" in converted and "world" in converted
+    burn_command = next(
+        json.loads(line)["command"]
+        for line in burned.events.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "task_started"
+    )
+    assert "subtitles=" in burn_command[burn_command.index("-vf") + 1]
+
+    embedded_job = JobSpec(**{**base_job.__dict__, "output": tmp_path / "embedded.mp4", "subtitle": "embedded"})
+    embedded = RenderEngine().run(embedded_job, keep_work=True)
+    embedded_command = next(
+        json.loads(line)["command"]
+        for line in embedded.events.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "task_started"
+    )
+    assert str(embedded.work / "0000.srt") in embedded_command
+    mapped_streams = [
+        embedded_command[index + 1]
+        for index, value in enumerate(embedded_command[:-1])
+        if value == "-map"
+    ]
+    assert "2:0" in mapped_streams
 
 
 def test_burnin_subtitle_style_uses_job_settings(tmp_path: Path) -> None:

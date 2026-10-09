@@ -22,6 +22,13 @@ from typing import Any
 
 from .engine import JobCancelled, RenderEngine, validate_job
 from .job import JobSpec
+from .media import (
+    AUDIO_EXTENSIONS as MEDIA_AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS as MEDIA_IMAGE_EXTENSIONS,
+    SUBTITLE_EXTENSIONS as MEDIA_SUBTITLE_EXTENSIONS,
+    find_subtitle,
+    subtitle_candidates,
+)
 
 
 class ServiceError(RuntimeError):
@@ -92,8 +99,9 @@ class UploadRecord:
 class UploadStore:
     """Store browser uploads outside the source checkout."""
 
-    AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".aac", ".ogg"}
-    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    AUDIO_EXTENSIONS = MEDIA_AUDIO_EXTENSIONS | {".m4a", ".flac", ".aac", ".ogg"}
+    IMAGE_EXTENSIONS = MEDIA_IMAGE_EXTENSIONS
+    SUBTITLE_EXTENSIONS = MEDIA_SUBTITLE_EXTENSIONS
 
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -108,7 +116,7 @@ class UploadStore:
             return "audio"
         if suffix in cls.IMAGE_EXTENSIONS:
             return "image"
-        if suffix == ".vtt":
+        if suffix in cls.SUBTITLE_EXTENSIONS:
             return "subtitle"
         return "other"
 
@@ -157,9 +165,9 @@ class SourceScan:
             warnings.append("未找到图片文件。")
         subtitles = {path.name.casefold() for path in self.subtitles}
         for audio in self.audio:
-            expected = f"{audio.name}.vtt"
-            if expected.casefold() not in subtitles:
-                warnings.append(f"缺少字幕：{expected}")
+            candidates = {path.name.casefold() for path in subtitle_candidates(audio)}
+            if not candidates.intersection(subtitles):
+                warnings.append(f"缺少字幕：{audio.name}.vtt")
         return warnings
 
     @property
@@ -167,15 +175,13 @@ class SourceScan:
         return bool(self.audio and self.images)
 
     def to_dict(self) -> dict[str, Any]:
-        subtitle_names = {path.name.casefold() for path in self.subtitles}
-
         def describe(path: Path) -> dict[str, Any]:
             return {"name": path.name, "size": path.stat().st_size}
 
         audio = [
             {
                 **describe(path),
-                "subtitle": f"{path.name}.vtt" if f"{path.name}.vtt".casefold() in subtitle_names else None,
+                "subtitle": find_subtitle(path).name if find_subtitle(path) else None,
             }
             for path in self.audio
         ]
@@ -231,7 +237,7 @@ def scan_source_directory(value: str | os.PathLike[str]) -> SourceScan:
     )
     subtitles = tuple(
         sorted(
-            (path for path in entries if path.suffix.lower() == ".vtt"),
+            (path for path in entries if path.suffix.lower() in MEDIA_SUBTITLE_EXTENSIONS),
             key=lambda path: _natural_sort_key(path.name),
         )
     )

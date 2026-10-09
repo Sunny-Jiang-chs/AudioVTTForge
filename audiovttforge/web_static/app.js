@@ -223,7 +223,7 @@ function renderScan(scan) {
 
   renderAudioAssignments(scan);
   renderScanList("scan-image-list", scan.images, (item) => scanItem(item.name, formatBytes(item.size), "IMG"));
-  renderScanList("scan-subtitle-list", scan.subtitles, (item) => scanItem(item.name, formatBytes(item.size), "VTT"));
+  renderScanList("scan-subtitle-list", scan.subtitles, (item) => scanItem(item.name, formatBytes(item.size), item.name.toLowerCase().endsWith(".lrc") ? "LRC" : "VTT"));
   renderPreviewImages(scan);
   $("scan-audio-count").textContent = `${scan.counts.audio} 个`;
   $("scan-image-count").textContent = `${scan.counts.images} 个`;

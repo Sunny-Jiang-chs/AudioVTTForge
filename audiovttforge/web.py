@@ -178,7 +178,11 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
                         "font_size": 42,
                         "font_color": "#FFFFFF",
                     },
-                    "upload_kinds": {"audio": sorted(self.manager.uploads.AUDIO_EXTENSIONS), "image": sorted(self.manager.uploads.IMAGE_EXTENSIONS), "subtitle": [".vtt"]},
+                    "upload_kinds": {
+                        "audio": sorted(self.manager.uploads.AUDIO_EXTENSIONS),
+                        "image": sorted(self.manager.uploads.IMAGE_EXTENSIONS),
+                        "subtitle": sorted(self.manager.uploads.SUBTITLE_EXTENSIONS),
+                    },
                 }
             )
             return
