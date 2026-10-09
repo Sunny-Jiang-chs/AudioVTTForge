@@ -5,13 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import shutil
 import threading
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .job import SUBTITLE_MODES
 from .service import (
@@ -24,6 +25,17 @@ from .service import (
 
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_UPLOAD_BYTES = 1024 * 1024 * 1024
+DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def content_disposition(name: str) -> str:
+    """Build an attachment header that survives non-ASCII output names.
+
+    ``send_header`` encodes headers as latin-1, so a raw CJK filename would raise
+    while writing the response.  Keep an ASCII fallback plus the RFC 5987 form.
+    """
+    fallback = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name)}"
 
 
 class HttpRequestError(Exception):
@@ -200,7 +212,7 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             raise HttpRequestError(404, "Resource not found")
         job_id = parts[3]
         if len(parts) == 4:
-            self._send_json(self.manager.get(job_id).to_dict())
+            self._send_json(self.manager.describe(job_id))
             return
         if len(parts) == 5 and parts[4] == "events":
             query = parse_qs(parsed.query)
@@ -215,14 +227,18 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             return
         if len(parts) == 5 and parts[4] == "download":
             path = self.manager.output_path(job_id)
-            body = path.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Content-Disposition", content_disposition(path.name))
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(body)
+            # Stream the finished file; a render can be far larger than memory.
+            try:
+                with path.open("rb") as source:
+                    shutil.copyfileobj(source, self.wfile, DOWNLOAD_CHUNK_BYTES)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             self.close_connection = True
             return
         raise HttpRequestError(404, "Resource not found")
@@ -240,7 +256,7 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/v1/jobs":
             record = self.manager.submit(self._read_json())
-            self._send_json(record.to_dict(), 202)
+            self._send_json(self.manager.describe(record.job_id), 202)
             return
         raise HttpRequestError(404, "Resource not found")
 
@@ -248,7 +264,8 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
         parts = [unquote(part) for part in urlsplit(self.path).path.split("/") if part]
         if parts[:3] != ["api", "v1", "jobs"] or len(parts) != 4:
             raise HttpRequestError(404, "Resource not found")
-        self._send_json(self.manager.cancel(parts[3]).to_dict())
+        record = self.manager.cancel(parts[3])
+        self._send_json(self.manager.describe(record.job_id))
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         try:

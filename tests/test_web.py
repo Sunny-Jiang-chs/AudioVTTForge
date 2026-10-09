@@ -192,6 +192,49 @@ def test_rest_serves_only_images_found_in_scanned_source_directory(tmp_path: Pat
         thread.join(timeout=5)
 
 
+def test_rest_download_streams_file_with_non_ascii_output_name(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "cover.png").write_bytes(b"image")
+    manager = JobManager(tmp_path / "data")
+    static_root = Path(__file__).parents[1] / "audiovttforge" / "web_static"
+    server = AudioVTTForgeServer(("127.0.0.1", 0), manager, static_root)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        job = request_json(
+            f"{base_url}/api/v1/jobs",
+            "POST",
+            {
+                "source_dir": str(source),
+                "output_dir": str(tmp_path / "exports"),
+                "output_name": "第01集.mp4",
+                "workers": 1,
+                "ffmpeg": str(tool),
+                "ffprobe": str(tool),
+            },
+        )
+        completed = wait_for_state(f"{base_url}/api/v1/jobs/{job['id']}", "succeeded")
+        assert Path(completed["output_path"]).name == "第01集.mp4"
+        with urllib.request.urlopen(f"{base_url}{completed['download_url']}", timeout=5) as response:
+            assert response.headers["Content-Length"] == str(len(b"fake mp4"))
+            disposition = response.headers["Content-Disposition"]
+            # send_header encodes latin-1, so the CJK name must travel in the
+            # RFC 5987 form with an ASCII fallback.
+            assert "filename*=UTF-8''" in disposition
+            assert "%E7%AC%AC01%E9%9B%86.mp4" in disposition
+            assert response.read() == b"fake mp4"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        manager.shutdown()
+
+
 def test_rest_delete_cancels_running_job_and_cleans_temporary_files(tmp_path: Path) -> None:
     tool = tmp_path / "slow_tool.py"
     tool.write_text(SLOW_TOOL, encoding="utf-8")

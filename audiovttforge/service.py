@@ -588,8 +588,8 @@ class JobManager:
             with self._lock:
                 cancellation_was_requested = record.cancel_requested
                 if not cancellation_was_requested:
-                    record.state = "failed"
                     record.error = str(exc)
+                    record.state = "failed"
             if cancellation_was_requested:
                 shutil.rmtree(record.root, ignore_errors=True)
                 with self._lock:
@@ -610,16 +610,18 @@ class JobManager:
                 return
             except Exception as exc:
                 with self._lock:
-                    record.state = "failed"
                     record.error = f"Could not write final output: {exc}"
+                    record.state = "failed"
                     self._append_event(record, "job_failed", error=record.error)
                 return
             shutil.rmtree(record.root, ignore_errors=True)
             with self._lock:
-                record.state = "succeeded"
+                # Publish the result before the terminal state so a reader can never
+                # observe "succeeded" while the downloadable output is still unset.
                 record.result_output = published_output
                 record.progress = 100.0
                 record.current_task = None
+                record.state = "succeeded"
                 self._append_event(
                     record,
                     "job_finished",
@@ -663,6 +665,17 @@ class JobManager:
         if record is None:
             raise NotFoundError(f"Job not found: {job_id}")
         return record
+
+    def describe(self, job_id: str) -> dict[str, Any]:
+        """Return a job snapshot that cannot race with the render worker.
+
+        ``JobRecord.to_dict`` reads several fields written by the worker (state,
+        error, progress, result_output), so it must be built while holding the
+        manager lock; reading them unlocked can expose a terminal state whose
+        derived fields are not set yet.
+        """
+        with self._lock:
+            return self.get(job_id).to_dict()
 
     def events(self, job_id: str, after: int = 0) -> list[dict[str, Any]]:
         record = self.get(job_id)

@@ -80,6 +80,10 @@ def test_job_manager_runs_upload_backed_job(tmp_path: Path) -> None:
     assert current.result_output.parent == manager.outputs_root
     assert not current.root.exists()
     assert current.to_dict()["output_path"] == str(current.result_output)
+    snapshot = manager.describe(record.job_id)
+    assert snapshot["state"] == "succeeded"
+    assert snapshot["output_ready"] is True
+    assert snapshot["output_path"] == str(current.result_output)
     events = manager.events(record.job_id)
     assert [event["seq"] for event in events] == list(range(1, len(events) + 1))
     assert events[0]["type"] == "job_queued"

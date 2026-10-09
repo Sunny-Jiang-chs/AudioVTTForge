@@ -8,8 +8,13 @@ const state = {
   jobId: null,
   after: 0,
   pollTimer: null,
+  polling: false,
+  pollFailures: 0,
+  serviceOnline: false,
   cancelPending: false,
 };
+
+const MAX_POLL_FAILURES = 10;
 
 const $ = (id) => document.getElementById(id);
 const sourceInput = $("source-dir");
@@ -341,8 +346,10 @@ async function parseResponse(response) {
 async function checkHealth() {
   try {
     await parseResponse(await fetch("/api/v1/health"));
+    state.serviceOnline = true;
     setServiceStatus(true);
   } catch (_error) {
+    state.serviceOnline = false;
     setServiceStatus(false);
   }
 }
@@ -396,9 +403,17 @@ function buildJobPayload() {
 }
 
 async function pollJob() {
-  if (!state.jobId) return;
+  // The interval callback is not awaited, so a slow poll could overlap the next
+  // tick and both would replay the same event cursor.
+  if (!state.jobId || state.polling) return;
+  state.polling = true;
   try {
     const job = await parseResponse(await fetch(`/api/v1/jobs/${state.jobId}`));
+    state.pollFailures = 0;
+    if (!state.serviceOnline) {
+      state.serviceOnline = true;
+      setServiceStatus(true);
+    }
     setProgress(job.progress);
     if (!state.cancelPending && job.state === "queued") setJobState("queued", "排队中");
     if (!state.cancelPending && job.state === "running") setJobState("running", job.current_task ? `处理中 · ${job.current_task}` : "处理中");
@@ -445,19 +460,35 @@ async function pollJob() {
     }
   } catch (error) {
     showError(error.message);
+    state.pollFailures += 1;
+    // One failed poll is usually a transient hiccup on a local socket; keep the
+    // interval alive so a still-running render does not vanish from the UI.
+    if (state.pollFailures < MAX_POLL_FAILURES) return;
+    state.serviceOnline = false;
     setServiceStatus(false);
     clearInterval(state.pollTimer);
     state.pollTimer = null;
+    state.jobId = null;
+    setJobState("failed", "状态未知");
+    $("job-summary").textContent = "与本地服务的连接已中断；后台渲染可能仍在进行，请检查服务窗口。";
     $("start-button").disabled = false;
+    $("cancel-button").hidden = true;
+  } finally {
+    state.polling = false;
   }
 }
 
 async function startJob() {
   showError("");
+  if (state.pollTimer) {
+    showError("已有任务正在进行，请等待完成或取消后再提交。");
+    return;
+  }
   if (!state.scan || !state.scan.ready) {
     showError("请先输入目录并完成扫描，确认音频和图片都已找到。");
     return;
   }
+  state.pollFailures = 0;
   $("start-button").disabled = true;
   $("cancel-button").hidden = true;
   state.cancelPending = false;
