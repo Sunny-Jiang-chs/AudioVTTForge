@@ -1,12 +1,21 @@
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from audiovttforge.engine import EngineError, RenderEngine, _tool_environment, plan_job, validate_job
-from audiovttforge.job import JobSpec
+from audiovttforge.engine import (
+    EngineError,
+    RenderEngine,
+    _tool_environment,
+    concat_line,
+    escape_filter_path,
+    plan_job,
+    validate_job,
+)
+from audiovttforge.job import DEFAULT_FFMPEG, JobSpec
 
 
 FAKE_TOOL = """\
@@ -28,6 +37,19 @@ output = pathlib.Path(args[-1])
 output.parent.mkdir(parents=True, exist_ok=True)
 output.write_bytes(b"fake mp4")
 print("frame=1 time=00:00:01.250")
+"""
+
+LOUD_FAILURE_TOOL = """\
+import json
+import sys
+
+args = sys.argv[1:]
+if "-show_entries" in args:
+    print(json.dumps({"streams": [{"duration": "1.250"}]}))
+    raise SystemExit(0)
+print("MARKER-no-option-name-near-Microsoft-YaHei")
+print("MARKER-second-line")
+raise SystemExit(3)
 """
 
 
@@ -90,6 +112,29 @@ def test_embedded_subtitle_input_precedes_output_options(tmp_path: Path) -> None
         }
     )
 
+    subtitle = job.audio[0].with_name(job.audio[0].name + ".vtt")
+    command = RenderEngine()._render_command(
+        job,
+        index=0,
+        duration=1.25,
+        segment=tmp_path / "segment.mp4",
+        subtitle_path=subtitle,
+    )
+
+    vtt_index = command.index(str(subtitle))
+    assert command[vtt_index - 1] == "-i"
+    assert command.index("-map") < command.index("-vf")
+    assert command.index("2:0") < command.index("-vf")
+    assert command.index("-c:s") < command.index("-movflags")
+
+
+def test_render_command_uses_no_subtitle_when_none_is_resolved(tmp_path: Path) -> None:
+    """The caller decides; an unresolved subtitle must not be re-discovered."""
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+    job = JobSpec(**{**job.__dict__, "subtitle": "embedded"})
+
     command = RenderEngine()._render_command(
         job,
         index=0,
@@ -98,11 +143,9 @@ def test_embedded_subtitle_input_precedes_output_options(tmp_path: Path) -> None
         subtitle_path=None,
     )
 
-    vtt_index = command.index(str(job.audio[0].with_name(job.audio[0].name + ".vtt")))
-    assert command[vtt_index - 1] == "-i"
-    assert command.index("-map") < command.index("-vf")
-    assert command.index("2:0") < command.index("-vf")
-    assert command.index("-c:s") < command.index("-movflags")
+    assert str(job.audio[0].with_name(job.audio[0].name + ".vtt")) not in command
+    assert "2:0" not in command
+    assert "-c:s" not in command
 
 
 def test_engine_converts_lrc_for_burnin_and_embedded_modes(tmp_path: Path) -> None:
@@ -321,3 +364,112 @@ def test_engine_allows_missing_vtt_and_renders_without_subtitles(tmp_path: Path)
     task_started = next(event for event in events if event["type"] == "task_started")
     video_filter = task_started["command"][task_started["command"].index("-vf") + 1]
     assert "subtitles=" not in video_filter
+
+
+def test_engine_skips_a_subtitle_file_without_cues(tmp_path: Path) -> None:
+    """A placeholder subtitle must not fail the render (libass cannot open 0 bytes)."""
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+    job.audio[0].with_name(job.audio[0].name + ".vtt").write_text("WEBVTT\n", encoding="utf-8")
+    events: list[dict] = []
+
+    result = RenderEngine(events.append).run(job, keep_work=True)
+
+    assert result.output.is_file()
+    assert "subtitle_empty" in [event["type"] for event in events]
+    assert not (result.work / "0000.srt").exists()
+    task_started = next(event for event in events if event["type"] == "task_started")
+    assert "subtitles=" not in task_started["command"][task_started["command"].index("-vf") + 1]
+
+
+def test_engine_reports_which_subtitle_could_not_be_parsed(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+    broken = job.audio[0].with_name(job.audio[0].name + ".vtt")
+    broken.write_text("WEBVTT\n\n00:00.000 --> not-a-time\nhello\n", encoding="utf-8")
+
+    with pytest.raises(EngineError) as failure:
+        RenderEngine().run(job)
+
+    message = str(failure.value)
+    assert "Subtitle could not be parsed" in message
+    assert str(broken) in message
+
+
+def test_render_failure_includes_the_ffmpeg_log_tail(tmp_path: Path) -> None:
+    """The user must not have to hunt a temp log that is purged on restart."""
+    tool = tmp_path / "loud_tool.py"
+    tool.write_text(LOUD_FAILURE_TOOL, encoding="utf-8")
+    job = make_job(tmp_path, tool)
+
+    with pytest.raises(EngineError) as failure:
+        RenderEngine().run(job)
+
+    message = str(failure.value)
+    assert "MARKER-no-option-name-near-Microsoft-YaHei" in message
+    assert "MARKER-second-line" in message
+
+
+def test_escape_filter_path_escapes_graph_and_option_specials() -> None:
+    # ":" is escaped for the option parser only (two backslashes); the graph
+    # parser escapes ' [ ] , ; as well, so those carry three.
+    assert escape_filter_path(Path(r"D:\a b\Bob's [final], v2; work\0000.srt")) == (
+        r"D\\:/a b/Bob\\\'s \\\[final\\\]\\\, v2\\\; work/0000.srt"
+    )
+    assert escape_filter_path(Path("D:/plain/0000.srt")) == r"D\\:/plain/0000.srt"
+
+
+def test_concat_line_survives_an_apostrophe_in_the_path(tmp_path: Path) -> None:
+    segment = tmp_path / ".Bob's [final], v2; work" / "0000.mp4"
+
+    line = concat_line(segment)
+
+    # file '<part>'\''<rest>' -- two delimiters plus the three-character escape
+    assert line.startswith("file '") and line.endswith("'")
+    assert "'\\''" in line
+    assert line.count("'") == 5
+
+
+@pytest.mark.skipif(not DEFAULT_FFMPEG.is_file(), reason="real FFmpeg is not installed")
+def test_real_ffmpeg_burns_subtitles_from_a_path_with_filter_specials(tmp_path: Path) -> None:
+    """The escaping fix verified against a real FFmpeg, not a fake tool."""
+    source = tmp_path / ".Bob's [final], v2; work"
+    source.mkdir()
+    audio = source / "01.wav"
+    image = source / "cover.png"
+    vtt = source / "01.wav.vtt"
+    subprocess.run(
+        [str(DEFAULT_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-ar", "48000", "-ac", "2", str(audio)],
+        check=True,
+    )
+    subprocess.run(
+        [str(DEFAULT_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "color=c=navy:s=320x180:d=1", "-frames:v", "1", str(image)],
+        check=True,
+    )
+    vtt.write_text("WEBVTT\n\n00:00.000 --> 00:00.900\nhello\n", encoding="utf-8")
+
+    job = JobSpec(
+        audio=(audio,),
+        images=(image,),
+        assignments=(0,),
+        output=source / "out.mp4",
+        subtitle="burnin",
+        fps=2,
+        width=320,
+        workers=1,
+    )
+    RenderEngine().run(job, keep_work=True)
+
+    assert job.output.is_file()
+    frame = source / "frame.png"
+    subprocess.run(
+        [str(DEFAULT_FFMPEG), "-hide_banner", "-loglevel", "error", "-y",
+         "-i", str(job.output), "-vf", "select=eq(n\\,1)", "-frames:v", "1", str(frame)],
+        check=True,
+    )
+    # Burn-in must have changed pixels; a plain navy frame would be tiny.
+    assert frame.stat().st_size > 3000

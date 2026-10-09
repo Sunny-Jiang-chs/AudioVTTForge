@@ -693,6 +693,8 @@ class App:
                     )
                 elif event_type == "subtitle_missing":
                     self.status.set(f"{Path(str(event['audio'])).name} 无字幕，继续生成无字幕片段")
+                elif event_type == "subtitle_empty":
+                    self.status.set(f"{Path(str(event['audio'])).name} 字幕文件为空，继续生成无字幕片段")
                 elif event_type == "task_progress":
                     index = int(event["index"])
                     self.task_table.item(

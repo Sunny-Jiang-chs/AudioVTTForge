@@ -317,6 +317,7 @@ function eventLabel(type) {
     task_finished: "片段已完成",
     task_skipped: "跳过已有片段",
     subtitle_missing: "未找到字幕",
+    subtitle_empty: "字幕为空",
     overall_progress: "总体进度",
     merge_started: "开始合并",
     merge_finished: "合并完成",

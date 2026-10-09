@@ -89,6 +89,55 @@ def _ass_color(value: str) -> str:
     return f"&H00{color[4:6]}{color[2:4]}{color[0:2]}"
 
 
+# FFmpeg parses a filter graph in two passes, so a path used as a filter option
+# value must be escaped once for the option parser and again for the graph
+# parser.  Quoting alone is not enough: an apostrophe in the path closes the
+# quote early, after which a comma or a bracket is read as graph syntax.
+_FILTER_OPTION_SPECIAL = "\\'[];,:"
+_FILTER_GRAPH_SPECIAL = "\\'[];,"
+
+
+def _escape_filter_value(value: str, specials: str) -> str:
+    return "".join(f"\\{char}" if char in specials else char for char in value)
+
+
+def escape_filter_path(path: Path) -> str:
+    """Escape a filesystem path for use as an unquoted FFmpeg filter value.
+
+    Without this a source or output directory such as ``Bob's [final], v2``
+    makes FFmpeg fail with a filtergraph parse error.
+    """
+    posix = path.as_posix()
+    return _escape_filter_value(
+        _escape_filter_value(posix, _FILTER_OPTION_SPECIAL),
+        _FILTER_GRAPH_SPECIAL,
+    )
+
+
+def _log_tail(path: Path, limit: int = 2000) -> str:
+    """Read the end of a possibly large FFmpeg log without loading all of it."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            if size > limit * 4:
+                stream.seek(-limit * 4, os.SEEK_END)
+            data = stream.read()
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace").strip()[-limit:]
+
+
+def concat_line(path: Path) -> str:
+    """Quote one segment path for the FFmpeg concat demuxer list.
+
+    The demuxer tokenizes each line like a filtergraph, so an apostrophe in the
+    path (``Bob's show``) must close the quote, escape itself and reopen it;
+    plain ``'...'`` quoting silently truncates the filename.
+    """
+    quoted = path.resolve().as_posix().replace("'", "'\\''")
+    return f"file '{quoted}'"
+
+
 class EventLog:
     def __init__(self, path: Path, callback: EventSink | None = None) -> None:
         self.path = path
@@ -240,8 +289,8 @@ class RenderEngine:
             "-i",
             str(audio),
         ]
-        subtitle_file = subtitle_path or find_subtitle(audio)
-        has_subtitle = subtitle_file is not None
+        subtitle_file = subtitle_path
+        has_subtitle = subtitle_file is not None and subtitle_file.is_file()
         if job.subtitle == "embedded" and has_subtitle:
             args += ["-i", str(subtitle_file)]
         args += [
@@ -250,10 +299,9 @@ class RenderEngine:
             "-map",
             "1:a:0",
         ]
-        if job.subtitle == "burnin" and subtitle_path is not None and subtitle_path.is_file():
-            escaped = str(subtitle_path).replace("\\", "/").replace(":", "\\:")
+        if job.subtitle == "burnin" and has_subtitle:
             video_filter += (
-                f",subtitles='{escaped}':force_style="
+                f",subtitles={escape_filter_path(subtitle_file)}:force_style="
                 f"'FontName={job.font_name},FontSize={job.font_size},"
                 f"PrimaryColour={_ass_color(job.font_color)},Outline=2,Shadow=1,"
                 "Alignment=2,MarginV=48'"
@@ -336,6 +384,49 @@ class RenderEngine:
         events.emit("probe_finished", audio=str(audio), duration=duration)
         return duration
 
+    def _prepare_subtitle(
+        self,
+        job: JobSpec,
+        index: int,
+        audio: Path,
+        duration: float,
+        work: Path,
+        events: EventLog,
+    ) -> Path | None:
+        """Return the subtitle file the render should use, if any.
+
+        LRC always gets converted to SRT.  A subtitle file that exists but holds
+        no cues is reported and skipped instead of failing the whole render.
+        """
+        if job.subtitle == "none":
+            return None
+        source = find_subtitle(audio)
+        if source is None:
+            events.emit(
+                "subtitle_missing",
+                index=index,
+                audio=str(audio),
+                subtitle=str(audio.with_name(audio.stem + ".vtt")),
+            )
+            return None
+        try:
+            cues = read_subtitle(source, round(duration * 1000))
+        except ValueError as exc:
+            raise EngineError(f"Subtitle could not be parsed: {source}: {exc}") from exc
+        if not cues:
+            events.emit(
+                "subtitle_empty",
+                index=index,
+                audio=str(audio),
+                subtitle=str(source),
+            )
+            return None
+        if job.subtitle == "burnin" or source.suffix.lower() == ".lrc":
+            srt_path = work / f"{index:04d}.srt"
+            write_srt(cues, srt_path)
+            return srt_path
+        return source
+
     def _render_one(
         self,
         job: JobSpec,
@@ -352,23 +443,8 @@ class RenderEngine:
             events.emit("task_skipped", index=index, audio=str(audio), segment=str(segment))
             return segment
 
-        subtitle_path = find_subtitle(audio)
-        has_subtitle = subtitle_path is not None
-        srt_path: Path | None = None
-        if has_subtitle and (
-            job.subtitle == "burnin"
-            or (job.subtitle == "embedded" and subtitle_path.suffix.lower() == ".lrc")
-        ):
-            srt_path = work / f"{index:04d}.srt"
-            write_srt(read_subtitle(subtitle_path, round(duration * 1000)), srt_path)
-        elif job.subtitle != "none" and not has_subtitle:
-            events.emit(
-                "subtitle_missing",
-                index=index,
-                audio=str(audio),
-                subtitle=str(audio.with_name(audio.stem + ".vtt")),
-            )
-        command = self._render_command(job, index, duration, segment, srt_path)
+        subtitle_path = self._prepare_subtitle(job, index, audio, duration, work, events)
+        command = self._render_command(job, index, duration, segment, subtitle_path)
         log_path = work / f"{index:04d}.log"
         events.emit("task_started", index=index, audio=str(audio), command=command)
         try:
@@ -405,7 +481,10 @@ class RenderEngine:
             raise EngineError(f"Could not start FFmpeg for {audio}: {exc}") from exc
         self._check_cancelled()
         if return_code != 0:
-            raise EngineError(f"FFmpeg failed for {audio}; see {log_path}")
+            details = _log_tail(log_path)
+            raise EngineError(
+                f"FFmpeg failed for {audio}; see {log_path}\n{details}"
+            )
         if not segment.is_file():
             raise EngineError(f"FFmpeg did not create the expected segment: {segment}")
         events.emit("task_finished", index=index, audio=str(audio), segment=str(segment))
@@ -423,7 +502,7 @@ class RenderEngine:
         self._check_cancelled()
         concat = work / "segments.txt"
         concat.write_text(
-            "\n".join(f"file '{path.resolve().as_posix()}'" for path in segments) + "\n",
+            "\n".join(concat_line(path) for path in segments) + "\n",
             encoding="utf-8",
         )
         merge_output = work / "merged.mp4"
@@ -450,8 +529,8 @@ class RenderEngine:
             raise EngineError(f"Could not start merge process; see {log_path}") from exc
         self._check_cancelled()
         if return_code != 0:
-            details = log_path.read_text(encoding="utf-8", errors="replace").strip()
-            raise EngineError(f"Merge failed; see {log_path}\n{details[-2000:]}")
+            details = _log_tail(log_path)
+            raise EngineError(f"Merge failed; see {log_path}\n{details}")
         if not merge_output.is_file():
             raise EngineError(f"Merge did not create the expected output: {merge_output}")
         try:
