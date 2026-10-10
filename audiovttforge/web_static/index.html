@@ -103,10 +103,6 @@
             </label>
             <div class="field-row">
               <label class="field">
-                <span>字幕模式</span>
-                <select id="subtitle-mode"></select>
-              </label>
-              <label class="field">
                 <span>帧率</span>
                 <select id="fps"></select>
               </label>
@@ -123,36 +119,29 @@
             </div>
             <div class="field-row">
               <label class="field">
-                <span>字幕字体</span>
-                <select id="font-name"></select>
-              </label>
-              <label class="field">
-                <span>字幕字号</span>
-                <select id="font-size"></select>
+                <span>音频编码</span>
+                <select id="audio-codec"></select>
               </label>
             </div>
-            <div class="field-row">
-              <label class="field color-field">
-                <span>字幕颜色</span>
-                <input id="font-color" type="color" value="#FFFFFF" aria-label="字幕颜色">
-              </label>
-            </div>
+            <button class="secondary-button settings-button" id="subtitle-settings-button" type="button">
+              <span aria-hidden="true">Aa</span>
+              <span>字幕设置</span>
+            </button>
           </div>
 
           <div class="subtitle-preview-block" aria-labelledby="subtitle-preview-title">
             <div class="subtitle-preview-heading">
               <strong id="subtitle-preview-title">画面与字幕预览</strong>
               <span id="subtitle-preview-meta">微软雅黑 · 42 px · #FFFFFF</span>
+              <button class="preview-expand-button" id="preview-expand-button" type="button" aria-label="放大预览" title="放大预览">
+                <span aria-hidden="true">⤢</span>
+              </button>
             </div>
             <label class="field preview-image-field">
               <span>预览图片</span>
               <select id="preview-image-select" disabled aria-label="选择预览图片">
                 <option value="">扫描目录后选择图片</option>
               </select>
-            </label>
-            <label class="field preview-text-field">
-              <span>预览文字</span>
-              <input id="subtitle-preview-text" type="text" value="这是字幕样式预览" maxlength="80">
             </label>
             <div class="subtitle-preview-stage" id="subtitle-preview-stage">
               <img id="subtitle-preview-image" alt="当前预览图片" hidden>
@@ -162,7 +151,7 @@
           </div>
 
           <div class="settings-summary">
-            <div><span>输出比例</span><strong>16:9</strong></div>
+            <div><span>输出画面</span><strong id="output-dimensions">1920 × 1080 · 16:9</strong></div>
             <div><span>输出容器</span><strong>MP4 / H.264</strong></div>
             <div><span>处理位置</span><strong>本机</strong></div>
           </div>
@@ -216,6 +205,55 @@
         </div>
       </section>
     </main>
+    <div class="settings-modal" id="subtitle-settings-modal" hidden>
+      <div class="settings-modal-backdrop" data-subtitle-settings-close></div>
+      <section class="settings-modal-content" role="dialog" aria-modal="true" aria-labelledby="subtitle-settings-title">
+        <div class="settings-modal-heading">
+          <div>
+            <p class="section-kicker">字幕样式</p>
+            <strong id="subtitle-settings-title">字幕设置</strong>
+          </div>
+          <button class="preview-modal-close" id="subtitle-settings-close" type="button" aria-label="关闭字幕设置" title="关闭字幕设置"><span aria-hidden="true">×</span></button>
+        </div>
+        <div class="field-stack settings-modal-fields">
+          <label class="field"><span>字幕模式</span><select id="subtitle-mode"></select></label>
+          <div class="field-row">
+            <label class="field"><span>字幕字体</span><select id="font-name"></select></label>
+            <label class="field"><span>字幕字号</span><select id="font-size"></select></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>字幕颜色</span><input id="font-color" type="color" value="#FFFFFF" aria-label="字幕颜色"></label>
+            <label class="field"><span>边缘颜色</span><input id="font-outline-color" type="color" value="#000000" aria-label="字幕边缘颜色"></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>边缘宽度</span><select id="font-outline-width"></select></label>
+            <label class="field"><span>阴影颜色</span><input id="font-shadow-color" type="color" value="#000000" aria-label="字幕阴影颜色"></label>
+          </div>
+          <div class="field-row">
+            <label class="field"><span>阴影深度</span><select id="font-shadow"></select></label>
+            <label class="field"><span>底部边距</span><select id="subtitle-margin"></select></label>
+          </div>
+          <label class="field preview-text-field"><span>预览文字</span><input id="subtitle-preview-text" type="text" value="这是字幕样式预览" maxlength="80"></label>
+        </div>
+        <button class="primary-button settings-modal-done" id="subtitle-settings-done" type="button"><span>完成</span></button>
+      </section>
+    </div>
+    <div class="preview-modal" id="preview-modal" hidden>
+      <div class="preview-modal-backdrop" data-preview-close></div>
+      <section class="preview-modal-content" role="dialog" aria-modal="true" aria-labelledby="preview-modal-title">
+        <div class="preview-modal-heading">
+          <strong id="preview-modal-title">画面与字幕预览</strong>
+          <button class="preview-modal-close" id="preview-modal-close" type="button" aria-label="关闭预览" title="关闭预览">
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+        <div class="subtitle-preview-stage preview-modal-stage" id="preview-modal-stage">
+          <img id="subtitle-preview-modal-image" alt="当前预览图片" hidden>
+          <span class="subtitle-preview-placeholder" id="subtitle-preview-modal-placeholder">扫描素材目录后可预览导入图片</span>
+          <span id="subtitle-preview-modal-text">这是字幕样式预览</span>
+        </div>
+      </section>
+    </div>
     <footer class="footer"><span>AudioVTTForge</span><span>所有处理均在本机完成</span></footer>
   </div>
   <script src="/assets/app.js" defer></script>

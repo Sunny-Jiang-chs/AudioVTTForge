@@ -23,7 +23,16 @@ from pathlib import Path
 from typing import Any
 
 from .engine import JobCancelled, RenderEngine, validate_job
-from .job import FONT_SIZE_LIMITS, SUBTITLE_MODES, WORKER_LIMITS, JobSpec
+from .job import (
+    AUDIO_CODECS,
+    FONT_OUTLINE_WIDTH_LIMITS,
+    FONT_SHADOW_LIMITS,
+    FONT_SIZE_LIMITS,
+    SUBTITLE_MARGIN_LIMITS,
+    SUBTITLE_MODES,
+    WORKER_LIMITS,
+    JobSpec,
+)
 from .media import (
     AUDIO_EXTENSIONS as MEDIA_AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS as MEDIA_IMAGE_EXTENSIONS,
@@ -197,7 +206,7 @@ class SourceScan:
         if not self.audio:
             warnings.append("未找到音频文件。")
         if not self.images:
-            warnings.append("未找到图片文件。")
+            warnings.append("未找到图片文件，将使用黑色背景。")
         subtitles = {path.name.casefold() for path in self.subtitles}
         for audio in self.audio:
             candidates = {path.name.casefold() for path in subtitle_candidates(audio)}
@@ -207,7 +216,9 @@ class SourceScan:
 
     @property
     def ready(self) -> bool:
-        return bool(self.audio and self.images)
+        # Images are optional: the renderer uses a black canvas when none are
+        # available, while audio remains the required input.
+        return bool(self.audio)
 
     def to_dict(self) -> dict[str, Any]:
         def describe(path: Path) -> dict[str, Any]:
@@ -294,7 +305,11 @@ def scan_source_directory(value: str | os.PathLike[str]) -> SourceScan:
 
 def job_defaults() -> dict[str, Any]:
     """Render defaults taken from ``JobSpec`` itself, not from a second copy."""
-    names = {"subtitle", "fps", "width", "workers", "font_name", "font_size", "font_color"}
+    names = {
+        "subtitle", "fps", "width", "workers", "font_name", "font_size", "font_color",
+        "font_outline_color", "font_outline_width", "font_shadow_color", "font_shadow",
+        "subtitle_margin", "audio_codec",
+    }
     return {
         item.name: item.default
         for item in fields(JobSpec)
@@ -311,6 +326,9 @@ def capabilities() -> dict[str, Any]:
         "limits": {
             "workers": list(WORKER_LIMITS),
             "font_size": list(FONT_SIZE_LIMITS),
+            "font_outline_width": list(FONT_OUTLINE_WIDTH_LIMITS),
+            "font_shadow": list(FONT_SHADOW_LIMITS),
+            "subtitle_margin": list(SUBTITLE_MARGIN_LIMITS),
         },
         "options": {
             "fps": [1, 2, 5, 10, 24],
@@ -326,6 +344,10 @@ def capabilities() -> dict[str, Any]:
                 "Segoe UI",
                 "Noto Sans CJK SC",
             ],
+            "audio_codec": sorted(AUDIO_CODECS),
+            "font_outline_width": list(range(FONT_OUTLINE_WIDTH_LIMITS[0], FONT_OUTLINE_WIDTH_LIMITS[1] + 1)),
+            "font_shadow": list(range(FONT_SHADOW_LIMITS[0], FONT_SHADOW_LIMITS[1] + 1)),
+            "subtitle_margin": [0, 24, 48, 72, 96, 128, 160, 200, 240],
         },
         "upload_kinds": {
             "audio": sorted(UploadStore.AUDIO_EXTENSIONS),
@@ -523,7 +545,11 @@ class JobManager:
         }
         # Forward only what the caller actually chose; every other field keeps the
         # default declared on JobSpec.
-        for key in ("subtitle", "fps", "width", "font_name", "font_size", "font_color"):
+        for key in (
+            "subtitle", "fps", "width", "font_name", "font_size", "font_color",
+            "font_outline_color", "font_outline_width", "font_shadow_color", "font_shadow",
+            "subtitle_margin", "audio_codec",
+        ):
             if payload.get(key) is not None:
                 data[key] = payload[key]
         if payload.get("workers") is not None:

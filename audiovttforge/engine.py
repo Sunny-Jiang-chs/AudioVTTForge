@@ -16,7 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .job import FONT_SIZE_LIMITS, JobSpec, SUBTITLE_MODES
+from .job import (
+    AUDIO_CODECS,
+    FONT_OUTLINE_WIDTH_LIMITS,
+    FONT_SHADOW_LIMITS,
+    FONT_SIZE_LIMITS,
+    SUBTITLE_MARGIN_LIMITS,
+    JobSpec,
+    SUBTITLE_MODES,
+)
 from .media import find_subtitle, read_subtitle, video_dimensions, write_srt
 
 EventSink = Callable[[dict[str, Any]], None]
@@ -170,11 +178,9 @@ def validate_job(job: JobSpec, check_tools: bool = True) -> list[str]:
     errors: list[str] = []
     if not job.audio:
         errors.append("At least one audio file is required.")
-    if not job.images:
-        errors.append("At least one image file is required.")
-    if len(job.assignments) != len(job.audio):
+    if job.images and len(job.assignments) != len(job.audio):
         errors.append("The number of assignments must match the number of audio files.")
-    if any(index < 0 or index >= len(job.images) for index in job.assignments):
+    if job.images and any(index < 0 or index >= len(job.images) for index in job.assignments):
         errors.append("An image assignment is outside the image list.")
     if job.subtitle not in SUBTITLE_MODES:
         errors.append(f"Unsupported subtitle mode: {job.subtitle}")
@@ -194,6 +200,17 @@ def validate_job(job: JobSpec, check_tools: bool = True) -> list[str]:
         )
     if not isinstance(job.font_color, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", job.font_color) is None:
         errors.append("Font color must be a #RRGGBB value.")
+    for name, value in (("font_outline_color", job.font_outline_color), ("font_shadow_color", job.font_shadow_color)):
+        if not isinstance(value, str) or re.fullmatch(r"#[0-9A-Fa-f]{6}", value) is None:
+            errors.append(f"{name} must be a #RRGGBB value.")
+    if job.font_outline_width < FONT_OUTLINE_WIDTH_LIMITS[0] or job.font_outline_width > FONT_OUTLINE_WIDTH_LIMITS[1]:
+        errors.append(f"Font outline width must be between {FONT_OUTLINE_WIDTH_LIMITS[0]} and {FONT_OUTLINE_WIDTH_LIMITS[1]}.")
+    if job.font_shadow < FONT_SHADOW_LIMITS[0] or job.font_shadow > FONT_SHADOW_LIMITS[1]:
+        errors.append(f"Font shadow must be between {FONT_SHADOW_LIMITS[0]} and {FONT_SHADOW_LIMITS[1]}.")
+    if job.subtitle_margin < SUBTITLE_MARGIN_LIMITS[0] or job.subtitle_margin > SUBTITLE_MARGIN_LIMITS[1]:
+        errors.append(f"Subtitle margin must be between {SUBTITLE_MARGIN_LIMITS[0]} and {SUBTITLE_MARGIN_LIMITS[1]}.")
+    if job.audio_codec not in AUDIO_CODECS:
+        errors.append(f"Unsupported audio codec: {job.audio_codec}")
     for path in job.audio:
         if not path.is_file():
             errors.append(f"Missing audio file: {path}")
@@ -232,6 +249,12 @@ def plan_job(job: JobSpec) -> dict[str, Any]:
         "font_name": job.font_name,
         "font_size": job.font_size,
         "font_color": job.font_color,
+        "font_outline_color": job.font_outline_color,
+        "font_outline_width": job.font_outline_width,
+        "font_shadow_color": job.font_shadow_color,
+        "font_shadow": job.font_shadow,
+        "subtitle_margin": job.subtitle_margin,
+        "audio_codec": job.audio_codec,
         "fps": job.fps,
         "video": {"width": width, "height": height},
         "workers": min(job.workers, len(job.audio)) if job.audio else 0,
@@ -268,27 +291,27 @@ class RenderEngine:
     ) -> list[str]:
         width, height = video_dimensions(job.width)
         audio = job.audio[index]
-        image = job.images[job.assignments[index]]
+        image = job.images[job.assignments[index]] if job.images else None
         fps = job.fps
         video_filter = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
             f"flags=lanczos,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:"
             f"color=black,fps={fps},setpts=N/FRAME_RATE/TB,setsar=1"
         )
-        args = [
-            "-hide_banner",
-            "-y",
-            "-loop",
-            "1",
-            "-framerate",
-            str(fps),
-            "-t",
-            f"{duration:.3f}",
-            "-i",
-            str(image),
-            "-i",
-            str(audio),
-        ]
+        args = ["-hide_banner", "-y"]
+        if image is None:
+            args += [
+                "-f", "lavfi",
+                "-i", f"color=c=black:s={width}x{height}:r={fps}:d={duration:.3f}",
+            ]
+        else:
+            args += [
+                "-loop", "1",
+                "-framerate", str(fps),
+                "-t", f"{duration:.3f}",
+                "-i", str(image),
+            ]
+        args += ["-i", str(audio)]
         subtitle_file = subtitle_path
         has_subtitle = subtitle_file is not None and subtitle_file.is_file()
         if job.subtitle == "embedded" and has_subtitle:
@@ -301,10 +324,12 @@ class RenderEngine:
         ]
         if job.subtitle == "burnin" and has_subtitle:
             video_filter += (
-                f",subtitles={escape_filter_path(subtitle_file)}:force_style="
-                f"'FontName={job.font_name},FontSize={job.font_size},"
-                f"PrimaryColour={_ass_color(job.font_color)},Outline=2,Shadow=1,"
-                "Alignment=2,MarginV=48'"
+                f",subtitles={escape_filter_path(subtitle_file)}:original_size={width}x{height}:force_style="
+                f"'PlayResX={width},PlayResY={height},FontName={job.font_name},FontSize={job.font_size},"
+                f"PrimaryColour={_ass_color(job.font_color)},"
+                f"OutlineColour={_ass_color(job.font_outline_color)},Outline={job.font_outline_width},"
+                f"ShadowColour={_ass_color(job.font_shadow_color)},Shadow={job.font_shadow},"
+                f"Alignment=2,MarginV={job.subtitle_margin}'"
             )
         elif job.subtitle == "embedded" and has_subtitle:
             args += ["-map", "2:0"]
@@ -321,10 +346,6 @@ class RenderEngine:
             "20",
             "-pix_fmt",
             "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "512k",
             "-ar",
             "48000",
             "-ac",
@@ -332,6 +353,8 @@ class RenderEngine:
             "-t",
             f"{duration:.3f}",
         ]
+        audio_options = ["-c:a", "alac"] if job.audio_codec == "alac" else ["-c:a", "aac", "-b:a", "512k"]
+        args[args.index("-ar"):args.index("-ar")] = audio_options
         if job.subtitle == "embedded" and has_subtitle:
             args += ["-c:s", "mov_text"]
         args += ["-movflags", "+faststart", str(segment)]

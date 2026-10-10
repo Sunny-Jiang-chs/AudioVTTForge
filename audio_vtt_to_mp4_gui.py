@@ -430,6 +430,8 @@ class App:
         self.save()
 
     def resolve_assignments(self) -> list[int]:
+        if not self.images:
+            return [0 for _ in self.audio]
         image_indices = {str(image): index for index, image in enumerate(self.images)}
         assignments: list[int] = []
         for audio_index, audio in enumerate(self.audio):

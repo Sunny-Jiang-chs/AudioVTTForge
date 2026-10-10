@@ -92,6 +92,7 @@ def test_engine_runs_without_gui(tmp_path: Path) -> None:
     assert "0000.srt" in video_filter
     assert "FontName=Microsoft YaHei" in video_filter
     assert "FontSize=42" in video_filter
+    assert "original_size=1920x1080" in video_filter
     assert "PrimaryColour=&H00FFFFFF" in video_filter
     assert plan_job(job)["tasks"][0]["subtitle"].endswith("01.wav.vtt")
     logged_types = [
@@ -209,9 +210,24 @@ def test_burnin_subtitle_style_uses_job_settings(tmp_path: Path) -> None:
     )
 
     video_filter = command[command.index("-vf") + 1]
+    assert "PlayResX=1920,PlayResY=1080" in video_filter
     assert "FontName=Arial" in video_filter
     assert "FontSize=56" in video_filter
     assert "PrimaryColour=&H00EFAB12" in video_filter
+
+
+def test_render_command_supports_lossless_alac_audio(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    base_job = make_job(tmp_path, tool)
+    job = JobSpec(**{**base_job.__dict__, "audio_codec": "alac"})
+
+    command = RenderEngine()._render_command(
+        job, index=0, duration=1.25, segment=tmp_path / "segment.mp4", subtitle_path=None
+    )
+
+    assert command[command.index("-c:a") + 1] == "alac"
+    assert "-b:a" not in command
 
 
 def test_validate_job_rejects_unsafe_subtitle_style(tmp_path: Path) -> None:
@@ -364,6 +380,26 @@ def test_engine_allows_missing_vtt_and_renders_without_subtitles(tmp_path: Path)
     task_started = next(event for event in events if event["type"] == "task_started")
     video_filter = task_started["command"][task_started["command"].index("-vf") + 1]
     assert "subtitles=" not in video_filter
+
+
+def test_engine_uses_black_canvas_when_no_images_are_available(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    audio = tmp_path / "01.wav"
+    audio.write_bytes(b"audio")
+    job = JobSpec(
+        audio=(audio,), images=(), assignments=(), output=tmp_path / "result.mp4",
+        workers=1, ffmpeg=tool, ffprobe=tool,
+    )
+
+    events: list[dict] = []
+    result = RenderEngine(events.append).run(job, keep_work=True)
+
+    assert result.output.is_file()
+    task_started = next(event for event in events if event["type"] == "task_started")
+    command = task_started["command"]
+    assert "-f" in command and command[command.index("-f") + 1] == "lavfi"
+    assert command[command.index("-i") + 1].startswith("color=c=black:s=1920x1080")
 
 
 def test_engine_skips_a_subtitle_file_without_cues(tmp_path: Path) -> None:

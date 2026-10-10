@@ -163,6 +163,18 @@ def test_source_scan_uses_natural_order_and_reports_missing_subtitles(tmp_path: 
     assert payload["suggested_output_name"] == _suggested_output_name(source.resolve())
 
 
+def test_source_scan_without_images_is_ready_for_black_background_render(tmp_path: Path) -> None:
+    source = tmp_path / "audio-only"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+
+    scan = scan_source_directory(source)
+
+    assert scan.ready is True
+    assert scan.to_dict()["ready"] is True
+    assert any("黑色背景" in warning for warning in scan.warnings)
+
+
 def test_job_manager_runs_source_directory_job(tmp_path: Path) -> None:
     tool = tmp_path / "fake_tool.py"
     tool.write_text(FAKE_TOOL, encoding="utf-8")
@@ -297,6 +309,8 @@ def test_capabilities_are_derived_from_the_job_model() -> None:
     assert report["api_version"] == "v1"
     assert report["defaults"]["workers"] == declared["workers"]
     assert report["defaults"]["font_color"] == declared["font_color"]
+    assert report["defaults"]["audio_codec"] == declared["audio_codec"]
+    assert report["options"]["audio_codec"] == ["aac", "alac"]
     assert report["defaults"]["subtitle"] == declared["subtitle"]
     assert report["limits"]["workers"] == [1, 10]
     assert report["options"]["workers"] == list(range(1, 11))
@@ -309,6 +323,10 @@ def test_capabilities_are_derived_from_the_job_model() -> None:
         ("workers", report["options"]["workers"]),
         ("font_size", report["options"]["font_size"]),
         ("font_name", report["options"]["font_name"]),
+        ("audio_codec", report["options"]["audio_codec"]),
+        ("font_outline_width", report["options"]["font_outline_width"]),
+        ("font_shadow", report["options"]["font_shadow"]),
+        ("subtitle_margin", report["options"]["subtitle_margin"]),
     ):
         assert report["defaults"][key] in values, f"{key} default is not selectable"
 

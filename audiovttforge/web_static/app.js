@@ -22,6 +22,23 @@ const sourceInput = $("source-dir");
 // Survives a page reload so a running render can be picked up again (the job
 // registry itself only lives in the service process).
 const JOB_STORAGE_KEY = "audiovttforge.jobId";
+const SETTINGS_STORAGE_KEY = "audiovttforge.outputSettings";
+const PERSISTED_SETTING_IDS = [
+  "subtitle-mode",
+  "fps",
+  "width",
+  "workers",
+  "font-name",
+  "font-size",
+  "font-color",
+  "font-outline-color",
+  "font-outline-width",
+  "font-shadow-color",
+  "font-shadow",
+  "subtitle-margin",
+  "audio-codec",
+  "subtitle-preview-text",
+];
 
 // Labels stay in the UI; every value, default and limit comes from the
 // /api/v1/capabilities resource so nothing is declared twice.
@@ -58,6 +75,47 @@ function selectValue(select, value) {
   }
 }
 
+function readSavedSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || "null");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function restoreSavedSettings() {
+  const saved = readSavedSettings();
+  PERSISTED_SETTING_IDS.forEach((id) => {
+    const value = saved[id];
+    if (value === undefined || value === null) return;
+    const control = $(id);
+    if (!control) return;
+    if (id.endsWith("color")) {
+      if (/^#[0-9a-fA-F]{6}$/.test(String(value))) control.value = value;
+      return;
+    }
+    if (control.tagName === "SELECT") {
+      selectValue(control, value);
+    } else {
+      control.value = String(value);
+    }
+  });
+}
+
+function saveSettings() {
+  const settings = {};
+  PERSISTED_SETTING_IDS.forEach((id) => {
+    const control = $(id);
+    if (control) settings[id] = control.value;
+  });
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (_error) {
+    /* private mode or storage disabled: settings simply remain in this page */
+  }
+}
+
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -82,40 +140,67 @@ function setProgress(value) {
   $("progress-value").textContent = `${Math.round(progress)}%`;
 }
 
+function updatePreviewTarget(preview, stage, fontName, fontSize, fontColor, text) {
+  if (!preview || !stage) return;
+  const outputWidth = Number($("width").value) || 1920;
+  const outputScale = Math.max(stage.getBoundingClientRect().width / outputWidth, 0.01);
+  preview.textContent = text;
+  preview.style.fontFamily = `"${fontName}", sans-serif`;
+  preview.style.fontSize = `${Math.max(6, fontSize * outputScale)}px`;
+  preview.style.color = fontColor;
+  const outlineWidth = Number($("font-outline-width").value) || 0;
+  const outlineColor = $("font-outline-color").value || "#000000";
+  const shadow = Number($("font-shadow").value) || 0;
+  const shadowColor = $("font-shadow-color").value || "#000000";
+  const margin = Number($("subtitle-margin").value) || 0;
+  preview.style.webkitTextStroke = `${Math.max(0.1, outlineWidth * outputScale)}px ${outlineColor}`;
+  preview.style.textShadow = shadow > 0
+    ? `0 ${Math.max(0.1, shadow * outputScale)}px ${Math.max(0.2, shadow * 2 * outputScale)}px ${shadowColor}`
+    : "none";
+  preview.style.bottom = `${Math.max(0, margin) * outputScale}px`;
+}
+
 function updateSubtitlePreview() {
   const fontName = $("font-name").value;
   const fontSize = Number($("font-size").value) || 42;
   const fontColor = $("font-color").value;
   const text = $("subtitle-preview-text").value || "这是字幕样式预览";
-  const preview = $("subtitle-preview");
-  preview.textContent = text;
-  preview.style.fontFamily = `"${fontName}", sans-serif`;
-  const stage = $("subtitle-preview-stage");
-  const outputScale = stage.getBoundingClientRect().height / 1080;
-  preview.style.fontSize = `${Math.max(6, fontSize * outputScale)}px`;
-  preview.style.color = fontColor;
-  preview.style.webkitTextStroke = `${Math.max(0.4, 2 * outputScale)}px #000`;
-  preview.style.textShadow = `0 ${Math.max(0.3, outputScale)}px ${Math.max(0.6, 2 * outputScale)}px #000`;
-  $("subtitle-preview-meta").textContent = `${fontName} · ${fontSize} px · ${fontColor.toUpperCase()}`;
+  updatePreviewTarget($("subtitle-preview"), $("subtitle-preview-stage"), fontName, fontSize, fontColor, text);
+  updatePreviewTarget($("subtitle-preview-modal-text"), $("preview-modal-stage"), fontName, fontSize, fontColor, text);
+  const outputWidth = Number($("width").value) || 1920;
+  const outputHeight = Math.round(outputWidth * 9 / 16);
+  $("subtitle-preview-meta").textContent = `${outputWidth} × ${outputHeight} · ${fontName} · ${fontSize} px`;
+  const dimensions = $("output-dimensions");
+  if (dimensions) dimensions.textContent = `${outputWidth} × ${outputHeight} · 16:9`;
 }
 
 function setPreviewImage(index) {
   const image = state.scan?.images[index];
   const previewImage = $("subtitle-preview-image");
   const placeholder = $("subtitle-preview-placeholder");
+  const modalImage = $("subtitle-preview-modal-image");
+  const modalPlaceholder = $("subtitle-preview-modal-placeholder");
   if (!image) {
-    previewImage.removeAttribute("src");
-    previewImage.hidden = true;
-    placeholder.hidden = false;
-    placeholder.textContent = "扫描素材目录后可预览导入图片";
+    [previewImage, modalImage].forEach((target) => {
+      target.removeAttribute("src");
+      target.hidden = true;
+    });
+    [placeholder, modalPlaceholder].forEach((target) => {
+      target.hidden = false;
+      target.textContent = state.scan && !state.scan.images.length
+        ? "未找到图片，将使用黑色背景"
+        : "扫描素材目录后可预览导入图片";
+    });
     return;
   }
 
   state.previewImageIndex = index;
   const query = new URLSearchParams({ directory: state.sourceDir, name: image.name });
-  placeholder.hidden = false;
-  placeholder.textContent = "正在加载图片…";
-  previewImage.hidden = true;
+  [placeholder, modalPlaceholder].forEach((target) => {
+    target.hidden = false;
+    target.textContent = "正在加载图片…";
+  });
+  [previewImage, modalImage].forEach((target) => { target.hidden = true; });
   previewImage.onload = () => {
     previewImage.hidden = false;
     placeholder.hidden = true;
@@ -125,7 +210,17 @@ function setPreviewImage(index) {
     placeholder.hidden = false;
     placeholder.textContent = "图片预览不可用";
   };
+  modalImage.onload = () => {
+    modalImage.hidden = false;
+    modalPlaceholder.hidden = true;
+  };
+  modalImage.onerror = () => {
+    modalImage.hidden = true;
+    modalPlaceholder.hidden = false;
+    modalPlaceholder.textContent = "图片预览不可用";
+  };
   previewImage.src = `/api/v1/sources/image?${query}`;
+  modalImage.src = previewImage.src;
 }
 
 function renderPreviewImages(scan) {
@@ -218,10 +313,13 @@ function renderAudioAssignments(scan) {
     // The default mapping is computed by the service, not re-derived here.
     const automaticOption = document.createElement("option");
     automaticOption.value = "";
-    automaticOption.textContent = audio.automatic_image_name
+    automaticOption.textContent = !scan.images.length
+      ? "黑色背景（无图片）"
+      : audio.automatic_image_name
       ? `自动分配 · ${audio.automatic_image_name}`
       : "自动分配";
     select.appendChild(automaticOption);
+    select.disabled = !scan.images.length;
     scan.images.forEach((image, imageIndex) => {
       const option = document.createElement("option");
       option.value = String(imageIndex);
@@ -281,11 +379,18 @@ function renderScan(scan) {
   });
   warningBox.hidden = !scan.warnings.length;
   if (scan.ready) {
-    setScanStatus(`已扫描 ${scan.source_name}，可以开始渲染。`, "ready");
+    setScanStatus(
+      scan.images.length
+        ? `已扫描 ${scan.source_name}，可以开始渲染。`
+        : `已扫描 ${scan.source_name}，未找到图片，将使用黑色背景。`,
+      scan.images.length ? "ready" : "warning",
+    );
     $("start-button").disabled = false;
-    $("job-summary").textContent = `${scan.counts.audio} 个音频 · ${scan.counts.images} 张图片已就绪。`;
+    $("job-summary").textContent = scan.images.length
+      ? `${scan.counts.audio} 个音频 · ${scan.counts.images} 张图片已就绪。`
+      : `${scan.counts.audio} 个音频已就绪，将使用黑色背景。`;
   } else {
-    setScanStatus("目录缺少音频或图片，暂时不能开始渲染。", "warning");
+    setScanStatus("目录中未找到音频，暂时不能开始渲染。", "warning");
     $("start-button").disabled = true;
   }
 }
@@ -428,9 +533,15 @@ function buildJobPayload() {
     fps: Number($("fps").value),
     width: Number($("width").value),
     workers: Number($("workers").value),
+    audio_codec: $("audio-codec").value,
     font_name: $("font-name").value,
     font_size: Number($("font-size").value),
     font_color: $("font-color").value,
+    font_outline_color: $("font-outline-color").value,
+    font_outline_width: Number($("font-outline-width").value),
+    font_shadow_color: $("font-shadow-color").value,
+    font_shadow: Number($("font-shadow").value),
+    subtitle_margin: Number($("subtitle-margin").value),
   };
   // Only pin assignments when the user actually changed one; otherwise the
   // service applies its own default mapping.
@@ -553,15 +664,28 @@ function applyCapabilities(report) {
   fillSelect($("workers"), options.workers || [], (value) => `${value} 个`);
   fillSelect($("font-size"), options.font_size || [], (value) => `${value} px`);
   fillSelect($("font-name"), options.font_name || [], (value) => FONT_LABELS[value] || value);
+  fillSelect($("audio-codec"), options.audio_codec || ["aac"], (value) => value === "alac" ? "ALAC（无损，兼容性较低）" : "AAC（通用，有损）");
+  fillSelect($("font-outline-width"), options.font_outline_width || [0, 1, 2], (value) => `${value} px`);
+  fillSelect($("font-shadow"), options.font_shadow || [0, 1, 2], (value) => `${value} px`);
+  fillSelect($("subtitle-margin"), options.subtitle_margin || [0, 48, 96], (value) => `${value} px`);
   selectValue($("subtitle-mode"), defaults.subtitle);
   selectValue($("fps"), defaults.fps);
   selectValue($("width"), defaults.width);
   selectValue($("workers"), defaults.workers);
   selectValue($("font-size"), defaults.font_size);
   selectValue($("font-name"), defaults.font_name);
+  selectValue($("audio-codec"), defaults.audio_codec || "aac");
+  selectValue($("font-outline-width"), defaults.font_outline_width ?? 2);
+  selectValue($("font-shadow"), defaults.font_shadow ?? 1);
+  selectValue($("subtitle-margin"), defaults.subtitle_margin ?? 48);
   if (/^#[0-9a-fA-F]{6}$/.test(String(defaults.font_color))) {
     $("font-color").value = defaults.font_color;
   }
+  ["font-outline-color", "font-shadow-color"].forEach((id) => {
+    const key = id.replaceAll("-", "_");
+    if (/^#[0-9a-fA-F]{6}$/.test(String(defaults[key]))) $(id).value = defaults[key];
+  });
+  restoreSavedSettings();
   updateSubtitlePreview();
 }
 
@@ -613,7 +737,7 @@ async function startJob() {
     return;
   }
   if (!state.scan || !state.scan.ready) {
-    showError("请先输入目录并完成扫描，确认音频和图片都已找到。");
+    showError("请先输入目录并完成扫描，确认音频文件已找到。");
     return;
   }
   state.pollFailures = 0;
@@ -681,17 +805,78 @@ $("output-name").addEventListener("input", () => {
 $("preview-image-select").addEventListener("change", () => {
   setPreviewImage(Number($("preview-image-select").value));
 });
+
+function openPreview() {
+  const modal = $("preview-modal");
+  modal.hidden = false;
+  document.body.classList.add("preview-modal-open");
+  $("preview-modal-close").focus();
+  updateSubtitlePreview();
+}
+
+function closePreview() {
+  $("preview-modal").hidden = true;
+  document.body.classList.remove("preview-modal-open");
+  $("preview-expand-button").focus();
+}
+
+$("preview-expand-button").addEventListener("click", openPreview);
+$("subtitle-preview-stage").addEventListener("click", openPreview);
+$("preview-modal-close").addEventListener("click", closePreview);
+$("preview-modal").addEventListener("click", (event) => {
+  if (event.target.matches("[data-preview-close]")) closePreview();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("preview-modal").hidden) closePreview();
+  if (event.key === "Escape" && !$("subtitle-settings-modal").hidden) closeSubtitleSettings();
+});
 [
   "font-name",
   "font-size",
   "font-color",
+  "font-outline-color",
+  "font-outline-width",
+  "font-shadow-color",
+  "font-shadow",
+  "subtitle-margin",
   "subtitle-preview-text",
 ].forEach((id) => {
-  $(id).addEventListener("input", updateSubtitlePreview);
-  $(id).addEventListener("change", updateSubtitlePreview);
+  $(id).addEventListener("input", () => {
+    updateSubtitlePreview();
+    saveSettings();
+  });
+  $(id).addEventListener("change", () => {
+    updateSubtitlePreview();
+    saveSettings();
+  });
+});
+["subtitle-mode", "fps", "width", "workers", "audio-codec"].forEach((id) => {
+  $(id).addEventListener("change", () => {
+    if (id === "width") updateSubtitlePreview();
+    saveSettings();
+  });
+});
+function openSubtitleSettings() {
+  $("subtitle-settings-modal").hidden = false;
+  document.body.classList.add("settings-modal-open");
+  $("subtitle-settings-close").focus();
+}
+
+function closeSubtitleSettings() {
+  $("subtitle-settings-modal").hidden = true;
+  document.body.classList.remove("settings-modal-open");
+  $("subtitle-settings-button").focus();
+}
+
+$("subtitle-settings-button").addEventListener("click", openSubtitleSettings);
+$("subtitle-settings-done").addEventListener("click", closeSubtitleSettings);
+$("subtitle-settings-close").addEventListener("click", closeSubtitleSettings);
+$("subtitle-settings-modal").addEventListener("click", (event) => {
+  if (event.target.matches("[data-subtitle-settings-close]")) closeSubtitleSettings();
 });
 updateSubtitlePreview();
 new ResizeObserver(updateSubtitlePreview).observe($("subtitle-preview-stage"));
+new ResizeObserver(updateSubtitlePreview).observe($("preview-modal-stage"));
 clearScan();
 
 async function bootstrap() {

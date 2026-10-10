@@ -17,9 +17,13 @@ DEFAULT_FFPROBE = Path(
     r"D:\tools\ffmpeg\ffmpeg-9.0.1-essentials_build\bin\ffprobe.exe"
 )
 SUBTITLE_MODES = {"burnin", "embedded", "none"}
+AUDIO_CODECS = {"aac", "alac"}
 # Domain limits shared by validation, the REST layer and the capabilities resource.
 WORKER_LIMITS = (1, 10)
 FONT_SIZE_LIMITS = (8, 144)
+FONT_OUTLINE_WIDTH_LIMITS = (0, 12)
+FONT_SHADOW_LIMITS = (0, 12)
+SUBTITLE_MARGIN_LIMITS = (0, 240)
 
 
 def _resolve_path(value: str | os.PathLike[str], base_dir: Path) -> Path:
@@ -79,6 +83,12 @@ class JobSpec:
     font_name: str = "Microsoft YaHei"
     font_size: int = 42
     font_color: str = "#FFFFFF"
+    font_outline_color: str = "#000000"
+    font_outline_width: int = 2
+    font_shadow_color: str = "#000000"
+    font_shadow: int = 1
+    subtitle_margin: int = 48
+    audio_codec: str = "aac"
     ffmpeg: Path = DEFAULT_FFMPEG
     ffprobe: Path = DEFAULT_FFPROBE
 
@@ -117,6 +127,12 @@ class JobSpec:
             font_name=str(data.get("font_name", "Microsoft YaHei")),
             font_size=int(data.get("font_size", 42)),
             font_color=str(data.get("font_color", "#FFFFFF")),
+            font_outline_color=str(data.get("font_outline_color", "#000000")),
+            font_outline_width=int(data.get("font_outline_width", 2)),
+            font_shadow_color=str(data.get("font_shadow_color", "#000000")),
+            font_shadow=int(data.get("font_shadow", 1)),
+            subtitle_margin=int(data.get("subtitle_margin", 48)),
+            audio_codec=str(data.get("audio_codec", "aac")),
             ffmpeg=_resolve_job_tool(
                 data.get("ffmpeg"),
                 root,
@@ -146,6 +162,12 @@ class JobSpec:
             "font_name": self.font_name,
             "font_size": self.font_size,
             "font_color": self.font_color,
+            "font_outline_color": self.font_outline_color,
+            "font_outline_width": self.font_outline_width,
+            "font_shadow_color": self.font_shadow_color,
+            "font_shadow": self.font_shadow,
+            "subtitle_margin": self.subtitle_margin,
+            "audio_codec": self.audio_codec,
             "ffmpeg": str(self.ffmpeg),
             "ffprobe": str(self.ffprobe),
         }
