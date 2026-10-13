@@ -91,6 +91,7 @@ class JobSpec:
     audio_codec: str = "aac"
     ffmpeg: Path = DEFAULT_FFMPEG
     ffprobe: Path = DEFAULT_FFPROBE
+    merge_subtitles: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_dir: Path | None = None) -> "JobSpec":
@@ -121,6 +122,7 @@ class JobSpec:
             assignments=assignments,
             output=_resolve_path(data["output"], root),
             subtitle=str(data.get("subtitle", "burnin")),
+            merge_subtitles=data.get("merge_subtitles", False),
             fps=int(data.get("fps", 2)),
             width=int(data.get("width", 1920)),
             workers=int(data.get("workers", 2)),
@@ -156,6 +158,7 @@ class JobSpec:
             "assignments": list(self.assignments),
             "output": str(self.output),
             "subtitle": self.subtitle,
+            "merge_subtitles": self.merge_subtitles,
             "fps": self.fps,
             "width": self.width,
             "workers": self.workers,

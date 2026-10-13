@@ -36,6 +36,13 @@ def srt_time(value: int) -> str:
     return f"{hours:02}:{minutes:02}:{seconds:02},{millis:03}"
 
 
+def vtt_time(value: int) -> str:
+    hours, rest = divmod(max(0, value), 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    seconds, millis = divmod(rest, 1_000)
+    return f"{hours:02}:{minutes:02}:{seconds:02}.{millis:03}"
+
+
 def read_vtt(path: Path) -> list[Cue]:
     lines = (
         path.read_text(encoding="utf-8-sig")
@@ -145,6 +152,48 @@ def write_srt(cues: list[Cue], path: Path) -> None:
             "",
         ]
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_vtt(cues: list[Cue], path: Path) -> None:
+    if not cues:
+        path.write_text("WEBVTT\n\n", encoding="utf-8", newline="\n")
+        return
+    lines = ["WEBVTT", ""]
+    for cue in cues:
+        lines.extend(
+            [
+                f"{vtt_time(cue.start)} --> {vtt_time(cue.end)}",
+                cue.text,
+                "",
+            ]
+        )
+    path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+
+def merge_subtitle_cues(audio: tuple[Path, ...], durations_ms: tuple[int, ...]) -> list[Cue]:
+    if len(audio) != len(durations_ms):
+        raise ValueError("Audio and duration counts must match")
+
+    merged: list[Cue] = []
+    offset = 0
+    for path, duration in zip(audio, durations_ms):
+        if duration <= 0:
+            raise ValueError(f"Audio duration must be positive: {path}")
+        subtitle = find_subtitle(path)
+        if subtitle is not None:
+            try:
+                cues = read_subtitle(subtitle, duration)
+            except ValueError as exc:
+                raise ValueError(f"{subtitle}: {exc}") from exc
+            for cue in cues:
+                if cue.start >= duration:
+                    continue
+                end = min(cue.end, duration)
+                if end > cue.start:
+                    merged.append(Cue(offset + cue.start, offset + end, cue.text))
+        offset += duration
+
+    return sorted(merged, key=lambda cue: (cue.start, cue.end))
 
 
 def automatic_image_index(audio_index: int, audio_count: int, image_count: int) -> int:

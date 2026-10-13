@@ -26,13 +26,13 @@
     <main class="workspace">
       <section class="intro-band" aria-labelledby="page-title">
         <div>
-          <p class="eyebrow">LOCAL RENDER WORKSPACE</p>
-          <h1 id="page-title">把音频、字幕和画面合成一个可下载的视频任务。</h1>
-          <p class="intro-copy">浏览器负责提交资源和查看进度，渲染仍在本机执行。你的素材不会离开这台电脑。</p>
+          <p class="eyebrow">AUDIO · SUBTITLE · VIDEO</p>
+          <h1 id="page-title">让声音与画面，一起成片。</h1>
+          <p class="intro-copy" id="intro-copy">音频、字幕与图片，合成为视频。</p>
         </div>
         <div class="intro-meta">
-          <span class="meta-label">API</span>
-          <span class="meta-value">v1 · 127.0.0.1</span>
+          <span class="meta-label">工作空间</span>
+          <span class="meta-value" id="workspace-mode">本地渲染</span>
         </div>
       </section>
 
@@ -41,14 +41,18 @@
           <div class="panel-heading">
             <div>
               <p class="section-kicker">01 / 素材</p>
-              <h2 id="assets-title">输入素材目录</h2>
+              <h2 id="assets-title">素材</h2>
             </div>
             <span class="panel-count" id="asset-count">0 个文件</span>
           </div>
 
           <div class="path-field">
-            <label class="field" for="source-dir">
-              <span>本地素材目录</span>
+            <div class="source-actions">
+              <button class="secondary-button choose-source-button" id="choose-source" type="button" hidden>选择音频文件夹</button>
+              <button class="secondary-button" id="add-images" type="button" hidden>添加图片</button>
+            </div>
+            <div class="field">
+              <label for="source-dir">音频与字幕目录</label>
               <div class="path-input-row">
                 <input id="source-dir" type="text" placeholder="例如 D:\\AudioVTT\\episode01" autocomplete="off" spellcheck="false">
                 <button class="secondary-button" id="scan-button" type="button">
@@ -56,11 +60,19 @@
                   <span>扫描目录</span>
                 </button>
               </div>
-            </label>
-            <p class="field-note">服务只读取本机目录的第一层文件；音频按数字自然排序，支持 VTT 和 LRC 字幕。</p>
+            </div>
+            <div class="recent-source-row" id="recent-source-row" hidden>
+              <label for="recent-sources">最近使用</label>
+              <select id="recent-sources" aria-label="最近使用的素材文件夹"></select>
+            </div>
+            <p class="field-note">音频按文件名自然排序；匹配同名 VTT / LRC 字幕。</p>
+            <details class="pending-images" id="pending-images" hidden open>
+              <summary id="pending-images-count">已添加图片</summary>
+              <div class="scan-list" id="pending-image-list"></div>
+            </details>
           </div>
 
-          <div class="scan-status" id="scan-status" role="status">输入目录路径后扫描，结果会显示在这里。</div>
+          <div class="scan-status" id="scan-status" role="status">请选择音频与字幕所在的文件夹。</div>
           <div class="scan-preview" id="scan-preview" hidden>
             <div class="scan-overview" id="scan-overview"></div>
             <div class="scan-warning" id="scan-warning" hidden>
@@ -72,6 +84,9 @@
                 <div class="scan-group-heading"><h3 id="scan-audio-title">音频 / 图片分配</h3><span id="scan-audio-count"></span></div>
                 <div class="scan-list" id="scan-audio-list"></div>
               </section>
+              <details class="source-details">
+                <summary>查看图片与字幕清单</summary>
+                <div class="source-details-grid">
               <section class="scan-group" aria-labelledby="scan-image-title">
                 <div class="scan-group-heading"><h3 id="scan-image-title">画面图片</h3><span id="scan-image-count"></span></div>
                 <div class="scan-list" id="scan-image-list"></div>
@@ -80,8 +95,31 @@
                 <div class="scan-group-heading"><h3 id="scan-subtitle-title">目录中的字幕</h3><span id="scan-subtitle-count"></span></div>
                 <div class="scan-list" id="scan-subtitle-list"></div>
               </section>
+                </div>
+              </details>
             </div>
           </div>
+          <div class="subtitle-preview-block" aria-labelledby="subtitle-preview-title">
+            <div class="subtitle-preview-heading">
+              <strong id="subtitle-preview-title">画面与字幕预览</strong>
+              <span id="subtitle-preview-meta">微软雅黑 · 42 px · #FFFFFF</span>
+              <button class="preview-expand-button" id="preview-expand-button" type="button" aria-label="放大预览" title="放大预览">
+                <span aria-hidden="true">⤢</span>
+              </button>
+            </div>
+            <label class="field preview-image-field">
+              <span>预览图片</span>
+              <select id="preview-image-select" disabled aria-label="选择预览图片">
+                <option value="">暂无图片</option>
+              </select>
+            </label>
+            <div class="subtitle-preview-stage" id="subtitle-preview-stage">
+              <img id="subtitle-preview-image" alt="当前预览图片" hidden>
+              <span class="subtitle-preview-placeholder" id="subtitle-preview-placeholder">暂无图片</span>
+              <span id="subtitle-preview">这是字幕样式预览</span>
+            </div>
+          </div>
+
         </section>
 
         <section class="panel settings-panel" aria-labelledby="settings-title">
@@ -90,21 +128,34 @@
               <p class="section-kicker">02 / 参数</p>
               <h2 id="settings-title">输出设置</h2>
             </div>
+            <div class="save-status">
+              <span id="settings-save-status" data-state="loading" role="status" aria-live="polite">正在读取…</span>
+              <button id="settings-save-retry" class="save-retry" type="button" hidden>重试</button>
+            </div>
           </div>
+          <p class="settings-save-error" id="settings-save-error" role="alert" hidden></p>
 
           <div class="field-stack">
             <label class="field">
               <span>输出文件名</span>
               <input id="output-name" type="text" value="result.mp4" spellcheck="false">
             </label>
-            <label class="field">
-              <span>输出目录</span>
-              <input id="output-dir" type="text" placeholder="扫描素材后默认使用素材目录" autocomplete="off" spellcheck="false">
-            </label>
+            <div class="field">
+              <label for="output-dir">保存到</label>
+              <label class="check-field output-follow"><input id="output-follows-source" type="checkbox" checked><span>保存到音频文件夹</span></label>
+              <div class="path-input-row output-path-row">
+                <input id="output-dir" type="text" placeholder="默认使用音频文件夹" autocomplete="off" spellcheck="false">
+                <button class="secondary-button compact-button" id="choose-output" type="button" hidden>更改</button>
+              </div>
+            </div>
             <div class="field-row">
               <label class="field">
                 <span>帧率</span>
                 <select id="fps"></select>
+              </label>
+              <label class="field">
+                <span>音频编码</span>
+                <select id="audio-codec"></select>
               </label>
             </div>
             <div class="field-row">
@@ -117,37 +168,10 @@
                 <select id="workers"></select>
               </label>
             </div>
-            <div class="field-row">
-              <label class="field">
-                <span>音频编码</span>
-                <select id="audio-codec"></select>
-              </label>
-            </div>
             <button class="secondary-button settings-button" id="subtitle-settings-button" type="button">
               <span aria-hidden="true">Aa</span>
               <span>字幕设置</span>
             </button>
-          </div>
-
-          <div class="subtitle-preview-block" aria-labelledby="subtitle-preview-title">
-            <div class="subtitle-preview-heading">
-              <strong id="subtitle-preview-title">画面与字幕预览</strong>
-              <span id="subtitle-preview-meta">微软雅黑 · 42 px · #FFFFFF</span>
-              <button class="preview-expand-button" id="preview-expand-button" type="button" aria-label="放大预览" title="放大预览">
-                <span aria-hidden="true">⤢</span>
-              </button>
-            </div>
-            <label class="field preview-image-field">
-              <span>预览图片</span>
-              <select id="preview-image-select" disabled aria-label="选择预览图片">
-                <option value="">扫描目录后选择图片</option>
-              </select>
-            </label>
-            <div class="subtitle-preview-stage" id="subtitle-preview-stage">
-              <img id="subtitle-preview-image" alt="当前预览图片" hidden>
-              <span class="subtitle-preview-placeholder" id="subtitle-preview-placeholder">扫描素材目录后可预览导入图片</span>
-              <span id="subtitle-preview">这是字幕样式预览</span>
-            </div>
           </div>
 
           <div class="settings-summary">
@@ -169,8 +193,12 @@
             <span class="result-label">已保存到</span>
             <strong id="result-name">result.mp4</strong>
           </div>
-          <a class="download-button" id="download-button" href="#" download>
+          <button class="download-button" id="open-output" type="button" hidden>打开所在文件夹</button>
+          <a class="download-button browser-download" id="download-button" href="#" download>
             <span aria-hidden="true">↓</span> 下载副本
+          </a>
+          <a class="download-button merged-subtitle-download browser-download" id="merged-subtitle-download" href="#" download hidden>
+            <span aria-hidden="true">↓</span> 下载 VTT
           </a>
         </div>
         <div class="panel-heading job-heading">
@@ -217,6 +245,8 @@
         </div>
         <div class="field-stack settings-modal-fields">
           <label class="field"><span>字幕模式</span><select id="subtitle-mode"></select></label>
+          <label class="check-field"><input id="merge-subtitles" type="checkbox"><span>合并输出总 VTT 字幕</span></label>
+          <p class="field-note subtitle-merge-note">按音频顺序合并各段字幕时间戳，与 MP4 一起保存。</p>
           <div class="field-row">
             <label class="field"><span>字幕字体</span><select id="font-name"></select></label>
             <label class="field"><span>字幕字号</span><select id="font-size"></select></label>
@@ -249,7 +279,7 @@
         </div>
         <div class="subtitle-preview-stage preview-modal-stage" id="preview-modal-stage">
           <img id="subtitle-preview-modal-image" alt="当前预览图片" hidden>
-          <span class="subtitle-preview-placeholder" id="subtitle-preview-modal-placeholder">扫描素材目录后可预览导入图片</span>
+          <span class="subtitle-preview-placeholder" id="subtitle-preview-modal-placeholder">暂无图片</span>
           <span id="subtitle-preview-modal-text">这是字幕样式预览</span>
         </div>
       </section>

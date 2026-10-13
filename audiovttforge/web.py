@@ -35,10 +35,13 @@ DOWNLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 ROUTES: tuple[tuple[str, tuple[str | None, ...]], ...] = (
     ("GET", ("api", "v1", "health")),
     ("GET", ("api", "v1", "capabilities")),
+    ("GET", ("api", "v1", "workspace")),
+    ("POST", ("api", "v1", "workspace")),
     ("GET", ("api", "v1", "jobs")),
     ("GET", ("api", "v1", "jobs", None)),
     ("GET", ("api", "v1", "jobs", None, "events")),
     ("GET", ("api", "v1", "jobs", None, "download")),
+    ("GET", ("api", "v1", "jobs", None, "subtitle")),
     ("GET", ("api", "v1", "sources", "image")),
     ("POST", ("api", "v1", "sources", "scan")),
     ("POST", ("api", "v1", "uploads")),
@@ -98,7 +101,9 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         # Keep the console useful when the server is launched from a terminal.
-        super().log_message(format, *args)
+        # Windowed desktop builds have no stderr stream.
+        if sys.stderr is not None:
+            super().log_message(format, *args)
 
     @property
     def manager(self) -> JobManager:
@@ -207,8 +212,16 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "service": "AudioVTTForge", "api_version": "v1"})
         elif pattern == ("api", "v1", "capabilities"):
             self._send_json(capabilities())
+        elif pattern == ("api", "v1", "workspace"):
+            if self.command == "POST":
+                try:
+                    self.manager.workspace.save(self._read_json())
+                except ValueError as exc:
+                    raise RequestValidationError(str(exc)) from exc
+            self._send_json(self.manager.workspace.load())
         elif pattern == ("api", "v1", "sources", "scan"):
-            self._send_json(self.manager.scan(self._read_json().get("path")).to_dict())
+            payload = self._read_json()
+            self._send_json(self.manager.scan(payload.get("path"), payload.get("image_paths")).to_dict())
         elif pattern == ("api", "v1", "sources", "image"):
             self._serve_source_image(parsed.query)
         elif pattern == ("api", "v1", "uploads"):
@@ -234,6 +247,8 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
             self._send_job_events(parts[3], parsed.query)
         elif pattern == ("api", "v1", "jobs", None, "download"):
             self._send_download(parts[3])
+        elif pattern == ("api", "v1", "jobs", None, "subtitle"):
+            self._send_merged_subtitle(parts[3])
         else:
             raise HttpRequestError(404, "Resource not found")
 
@@ -241,9 +256,13 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
         query = parse_qs(query_string)
         source_dir = query.get("directory", [""])[0]
         name = query.get("name", [""])[0]
-        if not source_dir or not name:
-            raise HttpRequestError(400, "'directory' and 'name' are required")
-        image = self.manager.source_image(source_dir, name)
+        image_path = query.get("path", [""])[0]
+        if image_path:
+            image = self.manager.preview_image(image_path)
+        else:
+            if not source_dir or not name:
+                raise HttpRequestError(400, "'path' or both 'directory' and 'name' are required")
+            image = self.manager.source_image(source_dir, name)
         content_type = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
         self._send_bytes(image.read_bytes(), content_type)
 
@@ -267,6 +286,21 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         # Stream the finished file; a render can be far larger than memory.
+        try:
+            with path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, DOWNLOAD_CHUNK_BYTES)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        self.close_connection = True
+
+    def _send_merged_subtitle(self, job_id: str) -> None:
+        path = self.manager.merged_subtitle_path(job_id)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/vtt; charset=utf-8")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Content-Disposition", content_disposition(path.name))
+        self.send_header("Connection", "close")
+        self.end_headers()
         try:
             with path.open("rb") as source:
                 shutil.copyfileobj(source, self.wfile, DOWNLOAD_CHUNK_BYTES)

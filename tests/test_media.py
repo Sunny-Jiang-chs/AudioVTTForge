@@ -5,11 +5,13 @@ import pytest
 from audiovttforge.media import (
     automatic_image_index,
     find_subtitle,
+    merge_subtitle_cues,
     parse_time,
     read_lrc,
     read_vtt,
     srt_time,
     video_dimensions,
+    write_vtt,
 )
 
 
@@ -43,6 +45,33 @@ def test_read_lrc_supports_offsets_multiple_timestamps_and_milliseconds(tmp_path
         (2950, 5178, "First line"),
         (5178, 7000, "Second line"),
     ]
+
+
+def test_merge_subtitle_cues_offsets_vtt_and_lrc_across_missing_audio(tmp_path: Path) -> None:
+    first = tmp_path / "01.wav"
+    missing = tmp_path / "02.wav"
+    last = tmp_path / "03.wav"
+    for path in (first, missing, last):
+        path.write_bytes(b"audio")
+    first.with_name("01.wav.vtt").write_text(
+        "WEBVTT\n\n00:00.500 --> 00:03.000\nFirst\n",
+        encoding="utf-8",
+    )
+    last.with_name("03.wav.lrc").write_text("[00:00.25]Last\n", encoding="utf-8")
+
+    cues = merge_subtitle_cues((first, missing, last), (2000, 1000, 2000))
+    output = tmp_path / "merged.vtt"
+    write_vtt(cues, output)
+
+    assert [(cue.start, cue.end, cue.text) for cue in cues] == [
+        (500, 2000, "First"),
+        (3250, 5000, "Last"),
+    ]
+    assert output.read_text(encoding="utf-8") == (
+        "WEBVTT\n\n"
+        "00:00:00.500 --> 00:00:02.000\nFirst\n\n"
+        "00:00:03.250 --> 00:00:05.000\nLast\n"
+    )
 
 
 def test_find_subtitle_supports_audio_and_stem_suffixes_with_vtt_precedence(tmp_path: Path) -> None:

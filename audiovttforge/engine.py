@@ -25,7 +25,14 @@ from .job import (
     JobSpec,
     SUBTITLE_MODES,
 )
-from .media import find_subtitle, read_subtitle, video_dimensions, write_srt
+from .media import (
+    find_subtitle,
+    merge_subtitle_cues,
+    read_subtitle,
+    video_dimensions,
+    write_srt,
+    write_vtt,
+)
 
 EventSink = Callable[[dict[str, Any]], None]
 
@@ -49,6 +56,7 @@ class RunResult:
     segments: tuple[Path, ...]
     events: Path
     summary: Path
+    subtitle_output: Path | None = None
 
 
 def _tool_command(tool: Path, arguments: Iterable[str]) -> list[str]:
@@ -184,6 +192,8 @@ def validate_job(job: JobSpec, check_tools: bool = True) -> list[str]:
         errors.append("An image assignment is outside the image list.")
     if job.subtitle not in SUBTITLE_MODES:
         errors.append(f"Unsupported subtitle mode: {job.subtitle}")
+    if not isinstance(job.merge_subtitles, bool):
+        errors.append("Merge subtitles must be a boolean.")
     if job.fps < 1:
         errors.append("FPS must be a positive integer.")
     if job.width < 2 or job.width % 2:
@@ -246,6 +256,7 @@ def plan_job(job: JobSpec) -> dict[str, Any]:
         "output": str(job.output),
         "work": str(job.output.parent / f".{job.output.stem}_parallel_work"),
         "subtitle": job.subtitle,
+        "merge_subtitles": job.merge_subtitles,
         "font_name": job.font_name,
         "font_size": job.font_size,
         "font_color": job.font_color,
@@ -388,6 +399,7 @@ class RenderEngine:
                 errors="replace",
                 cwd=str(job.ffprobe.parent) if job.ffprobe.parent != Path(".") else None,
                 env=_tool_environment(job.ffprobe),
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             self._track_process(process, True)
             stdout, stderr = process.communicate()
@@ -482,6 +494,7 @@ class RenderEngine:
                     errors="replace",
                     cwd=str(job.ffmpeg.parent) if job.ffmpeg.parent != Path(".") else None,
                     env=_tool_environment(job.ffmpeg),
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 self._track_process(process, True)
                 try:
@@ -541,6 +554,7 @@ class RenderEngine:
                     stderr=subprocess.STDOUT,
                     cwd=str(ffmpeg.parent) if ffmpeg.parent != Path(".") else None,
                     env=_tool_environment(ffmpeg),
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 self._track_process(process, True)
                 try:
@@ -658,8 +672,34 @@ class RenderEngine:
                             )
                     self._merge(job.ffmpeg, segments, work, job.output, events)
                     self._check_cancelled()
+                    subtitle_output = None
+                    if job.merge_subtitles:
+                        candidate = job.output.with_suffix(".vtt")
+                        try:
+                            cues = merge_subtitle_cues(
+                                job.audio,
+                                tuple(
+                                    round(float(f"{duration:.3f}") * 1000)
+                                    for duration in durations
+                                ),
+                            )
+                        except ValueError as exc:
+                            raise EngineError(f"Could not merge subtitles: {exc}") from exc
+                        write_vtt(cues, candidate)
+                        subtitle_output = candidate
+                        events.emit(
+                            "subtitles_merged",
+                            output=str(candidate),
+                            cue_count=len(cues),
+                        )
                     events.emit("job_finished", output=str(job.output))
-                    result_data.update({"success": True, "segments": [str(path) for path in segments]})
+                    result_data.update(
+                        {
+                            "success": True,
+                            "segments": [str(path) for path in segments],
+                            "subtitle_output": str(subtitle_output) if subtitle_output else None,
+                        }
+                    )
                 except JobCancelled as exc:
                     result_data.update({"error": str(exc), "segments": [str(path) for path in segments]})
                     events.emit("job_cancelled", output=str(job.output), work=str(work))
@@ -678,7 +718,14 @@ class RenderEngine:
             )
         if not keep_work:
             shutil.rmtree(work, ignore_errors=True)
-        return RunResult(job.output, work, tuple(segments), events_path, summary_path)
+        return RunResult(
+            job.output,
+            work,
+            tuple(segments),
+            events_path,
+            summary_path,
+            subtitle_output,
+        )
 
     def merge_existing(
         self,
@@ -712,6 +759,7 @@ def inspect_tool(tool: Path) -> dict[str, Any]:
             timeout=5,
             check=False,
             env=_tool_environment(tool),
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         first_line = (result.stdout or result.stderr).splitlines()
         report["version"] = first_line[0] if first_line else ""

@@ -41,6 +41,7 @@ from .media import (
     find_subtitle,
     subtitle_candidates,
 )
+from .preferences import WorkspaceStore
 
 
 class ServiceError(RuntimeError):
@@ -199,6 +200,7 @@ class SourceScan:
     audio: tuple[Path, ...]
     images: tuple[Path, ...]
     subtitles: tuple[Path, ...]
+    missing_images: tuple[Path, ...] = ()
 
     @property
     def warnings(self) -> list[str]:
@@ -207,6 +209,7 @@ class SourceScan:
             warnings.append("未找到音频文件。")
         if not self.images:
             warnings.append("未找到图片文件，将使用黑色背景。")
+        warnings.extend(f"外部图片已丢失或无法读取：{path}" for path in self.missing_images)
         subtitles = {path.name.casefold() for path in self.subtitles}
         for audio in self.audio:
             candidates = {path.name.casefold() for path in subtitle_candidates(audio)}
@@ -222,7 +225,7 @@ class SourceScan:
 
     def to_dict(self) -> dict[str, Any]:
         def describe(path: Path) -> dict[str, Any]:
-            return {"name": path.name, "size": path.stat().st_size}
+            return {"name": path.name, "path": str(path), "size": path.stat().st_size}
 
         audio: list[dict[str, Any]] = []
         for index, path in enumerate(self.audio):
@@ -242,6 +245,9 @@ class SourceScan:
                     "automatic_image_name": (
                         self.images[automatic].name if automatic is not None else None
                     ),
+                    "automatic_image_path": (
+                        str(self.images[automatic]) if automatic is not None else None
+                    ),
                 }
             )
         return {
@@ -251,6 +257,7 @@ class SourceScan:
             "audio": audio,
             "images": [describe(path) for path in self.images],
             "subtitles": [describe(path) for path in self.subtitles],
+            "missing_images": [str(path) for path in self.missing_images],
             "counts": {
                 "audio": len(self.audio),
                 "images": len(self.images),
@@ -268,7 +275,38 @@ def _suggested_output_name(directory: Path) -> str:
     return f"{longest}.mp4"
 
 
-def scan_source_directory(value: str | os.PathLike[str]) -> SourceScan:
+def _image_paths(value: Any, *, allow_missing: bool, deduplicate: bool = True) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() for item in value):
+        raise RequestValidationError("'image_paths' must be an array of absolute image paths")
+    images: list[Path] = []
+    missing: list[Path] = []
+    seen: set[Path] = set()
+    for item in value:
+        path = Path(item).expanduser()
+        if "\x00" in item or not path.is_absolute():
+            raise RequestValidationError("'image_paths' must contain absolute image paths")
+        if path.suffix.lower() not in UploadStore.IMAGE_EXTENSIONS:
+            raise RequestValidationError(f"Unsupported image file: {path}")
+        try:
+            path = path.resolve()
+            available = path.is_file()
+            if available:
+                path.stat()
+        except (OSError, ValueError):
+            available = False
+        if deduplicate and path in seen:
+            continue
+        seen.add(path)
+        if available:
+            images.append(path)
+        elif allow_missing:
+            missing.append(path)
+        else:
+            raise RequestValidationError(f"Image file is missing or unavailable: {path}")
+    return tuple(images), tuple(missing)
+
+
+def scan_source_directory(value: str | os.PathLike[str], image_paths: list[str] | None = None) -> SourceScan:
     if not isinstance(value, (str, os.PathLike)) or not str(value).strip():
         raise RequestValidationError("'path' must be a non-empty directory path")
     try:
@@ -300,7 +338,11 @@ def scan_source_directory(value: str | os.PathLike[str]) -> SourceScan:
             key=lambda path: _natural_sort_key(path.name),
         )
     )
-    return SourceScan(directory, audio, images, subtitles)
+    missing: tuple[Path, ...] = ()
+    if image_paths is not None:
+        external, missing = _image_paths(image_paths, allow_missing=True)
+        images = tuple(dict.fromkeys([*(path.resolve() for path in images), *external]))
+    return SourceScan(directory, audio, images, subtitles, missing)
 
 
 def job_defaults() -> dict[str, Any]:
@@ -308,7 +350,7 @@ def job_defaults() -> dict[str, Any]:
     names = {
         "subtitle", "fps", "width", "workers", "font_name", "font_size", "font_color",
         "font_outline_color", "font_outline_width", "font_shadow_color", "font_shadow",
-        "subtitle_margin", "audio_codec",
+        "subtitle_margin", "audio_codec", "merge_subtitles",
     }
     return {
         item.name: item.default
@@ -370,6 +412,7 @@ class JobRecord:
     current_task: str | None = None
     error: str | None = None
     result_output: Path | None = None
+    result_subtitle: Path | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     progress_events: deque[dict[str, Any]] = field(
         default_factory=lambda: deque(maxlen=MAX_RETAINED_PROGRESS_EVENTS),
@@ -394,10 +437,14 @@ class JobRecord:
             "output_path": str(self.target_output),
             "source_dir": str(self.source_dir) if self.source_dir else None,
             "output_ready": bool(self.result_output and self.result_output.is_file()),
+            "merged_subtitle_ready": bool(
+                self.result_subtitle and self.result_subtitle.is_file()
+            ),
             "cancelable": self.state in {"queued", "running"},
             "event_count": self.event_count,
             "events_url": f"/api/v1/jobs/{self.job_id}/events",
             "download_url": f"/api/v1/jobs/{self.job_id}/download",
+            "merged_subtitle_download_url": f"/api/v1/jobs/{self.job_id}/subtitle",
         }
 
 
@@ -417,6 +464,8 @@ class JobManager:
         self.outputs_root.mkdir(parents=True, exist_ok=True)
         self._jobs: dict[str, JobRecord] = {}
         self._lock = threading.RLock()
+        self.workspace = WorkspaceStore(self.root)
+        self._preview_images: set[Path] = set()
         self._executor = ThreadPoolExecutor(max_workers=max(1, max_concurrent_jobs))
         self._purge_stale_state()
 
@@ -451,8 +500,27 @@ class JobManager:
             raise RequestValidationError(f"Upload is empty: {name}")
         return self.uploads.save(name, content)
 
-    def scan(self, source_dir: str | os.PathLike[str]) -> SourceScan:
-        return scan_source_directory(source_dir)
+    def scan(self, source_dir: str | os.PathLike[str], image_paths: list[str] | None = None) -> SourceScan:
+        scan = scan_source_directory(source_dir, image_paths)
+        with self._lock:
+            self._preview_images.update(path.resolve() for path in scan.images)
+        return scan
+
+    def preview_image(self, value: str) -> Path:
+        if not isinstance(value, str) or not value.strip() or "\x00" in value:
+            raise RequestValidationError("'path' must be an absolute image path")
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise RequestValidationError("'path' must be an absolute image path")
+        try:
+            path = path.resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise NotFoundError("Image is missing or unavailable") from exc
+        with self._lock:
+            allowed = path in self._preview_images
+        if not allowed or not path.is_file() or path.suffix.lower() not in UploadStore.IMAGE_EXTENSIONS:
+            raise NotFoundError("Image has not been selected or scanned")
+        return path
 
     def source_image(self, source_dir: str | os.PathLike[str], name: str) -> Path:
         if not name or Path(name).name != name:
@@ -501,6 +569,9 @@ class JobManager:
             input_root = scan.directory
             audio_paths = [str(path) for path in scan.audio]
             image_paths = [str(path) for path in scan.images]
+            if "image_paths" in payload:
+                explicit_images, _ = _image_paths(payload["image_paths"], allow_missing=False, deduplicate=False)
+                image_paths = [str(path) for path in explicit_images]
         else:
             audio_ids = self._string_list(payload, "audio")
             image_ids = self._string_list(payload, "images")
@@ -549,6 +620,7 @@ class JobManager:
             "subtitle", "fps", "width", "font_name", "font_size", "font_color",
             "font_outline_color", "font_outline_width", "font_shadow_color", "font_shadow",
             "subtitle_margin", "audio_codec",
+            "merge_subtitles",
         ):
             if payload.get(key) is not None:
                 data[key] = payload[key]
@@ -774,11 +846,32 @@ class JobManager:
                     record.state = "failed"
                     self._append_event(record, "job_failed", error=record.error)
                 return
+            published_subtitle = None
+            if result.subtitle_output is not None:
+                try:
+                    published_subtitle = self._publish_output(
+                        result.subtitle_output,
+                        record.target_output.with_suffix(".vtt"),
+                        job_id,
+                        record.cancel_event,
+                    )
+                except JobCancelled:
+                    shutil.rmtree(record.root, ignore_errors=True)
+                    with self._lock:
+                        self._mark_cancelled(record)
+                    return
+                except Exception as exc:
+                    with self._lock:
+                        record.error = f"MP4 was published, but merged subtitles could not be written: {exc}"
+                        record.state = "failed"
+                        self._append_event(record, "job_failed", error=record.error)
+                    return
             shutil.rmtree(record.root, ignore_errors=True)
             with self._lock:
                 # Publish the result before the terminal state so a reader can never
                 # observe "succeeded" while the downloadable output is still unset.
                 record.result_output = published_output
+                record.result_subtitle = published_subtitle
                 record.progress = 100.0
                 record.current_task = None
                 record.state = "succeeded"
@@ -786,6 +879,7 @@ class JobManager:
                     record,
                     "job_finished",
                     output=str(published_output),
+                    merged_subtitle=str(published_subtitle) if published_subtitle else None,
                     cache_cleaned=not record.root.exists(),
                 )
         finally:
@@ -874,3 +968,13 @@ class JobManager:
         if record.state != "succeeded" or not record.result_output or not record.result_output.is_file():
             raise ServiceError("Job output is not ready")
         return record.result_output
+
+    def merged_subtitle_path(self, job_id: str) -> Path:
+        record = self.get(job_id)
+        if (
+            record.state != "succeeded"
+            or not record.result_subtitle
+            or not record.result_subtitle.is_file()
+        ):
+            raise ServiceError("Merged subtitle output is not ready")
+        return record.result_subtitle

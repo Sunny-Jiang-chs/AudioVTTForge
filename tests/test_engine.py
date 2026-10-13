@@ -402,6 +402,62 @@ def test_engine_uses_black_canvas_when_no_images_are_available(tmp_path: Path) -
     assert command[command.index("-i") + 1].startswith("color=c=black:s=1920x1080")
 
 
+def test_engine_exports_merged_vtt_independently_of_subtitle_mode(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    first = tmp_path / "01.wav"
+    second = tmp_path / "02.wav"
+    first.write_bytes(b"audio")
+    second.write_bytes(b"audio")
+    first.with_name("01.wav.vtt").write_text(
+        "WEBVTT\n\n00:00.100 --> 00:00.500\nFirst\n", encoding="utf-8"
+    )
+    second.with_name("02.wav.lrc").write_text("[00:00.200]Second\n", encoding="utf-8")
+    job = JobSpec(
+        audio=(first, second),
+        images=(),
+        assignments=(),
+        output=tmp_path / "result.mp4",
+        subtitle="none",
+        merge_subtitles=True,
+        workers=1,
+        ffmpeg=tool,
+        ffprobe=tool,
+    )
+
+    result = RenderEngine().run(job, keep_work=True)
+
+    assert result.output.is_file()
+    assert result.subtitle_output == tmp_path / "result.vtt"
+    assert result.subtitle_output.read_text(encoding="utf-8") == (
+        "WEBVTT\n\n"
+        "00:00:00.100 --> 00:00:00.500\nFirst\n\n"
+        "00:00:01.450 --> 00:00:02.500\nSecond\n"
+    )
+
+
+def test_engine_writes_empty_vtt_when_merge_is_enabled_without_subtitles(tmp_path: Path) -> None:
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    audio = tmp_path / "01.wav"
+    audio.write_bytes(b"audio")
+    job = JobSpec(
+        audio=(audio,),
+        images=(),
+        assignments=(),
+        output=tmp_path / "result.mp4",
+        merge_subtitles=True,
+        workers=1,
+        ffmpeg=tool,
+        ffprobe=tool,
+    )
+
+    result = RenderEngine().run(job, keep_work=True)
+
+    assert result.subtitle_output == tmp_path / "result.vtt"
+    assert result.subtitle_output.read_text(encoding="utf-8") == "WEBVTT\n\n"
+
+
 def test_engine_skips_a_subtitle_file_without_cues(tmp_path: Path) -> None:
     """A placeholder subtitle must not fail the render (libass cannot open 0 bytes)."""
     tool = tmp_path / "fake_tool.py"

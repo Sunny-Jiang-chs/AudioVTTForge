@@ -1,10 +1,12 @@
 import os
+import json
 import time
 from pathlib import Path
 
 import pytest
 
 from audiovttforge.engine import ValidationError
+from audiovttforge.preferences import WorkspaceStore
 from audiovttforge.service import (
     MAX_RETAINED_PROGRESS_EVENTS,
     JobManager,
@@ -310,6 +312,7 @@ def test_capabilities_are_derived_from_the_job_model() -> None:
     assert report["defaults"]["workers"] == declared["workers"]
     assert report["defaults"]["font_color"] == declared["font_color"]
     assert report["defaults"]["audio_codec"] == declared["audio_codec"]
+    assert report["defaults"]["merge_subtitles"] is False
     assert report["options"]["audio_codec"] == ["aac", "alac"]
     assert report["defaults"]["subtitle"] == declared["subtitle"]
     assert report["limits"]["workers"] == [1, 10]
@@ -553,3 +556,116 @@ def test_cancel_stops_ffmpeg_cleans_job_files_and_keeps_source(tmp_path: Path) -
         assert cancelled.to_dict()["cancelable"] is False
     finally:
         manager.shutdown()
+
+
+def test_scan_combines_external_images_by_full_path_without_copying(tmp_path: Path) -> None:
+    source = tmp_path / "素材"
+    external = tmp_path / "其他 图片"
+    source.mkdir()
+    external.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "10.png").write_bytes(b"ten")
+    (source / "02.png").write_bytes(b"two")
+    same_name = external / "02.png"
+    other = external / "01.png"
+    same_name.write_bytes(b"external same name")
+    other.write_bytes(b"external other")
+    paths = [str(same_name), str(other), str(same_name), str(source / "02.png")]
+    manager = JobManager(tmp_path / "data")
+    try:
+        report = manager.scan(source, paths).to_dict()
+        assert [item["path"] for item in report["images"]] == [
+            str(source / "02.png"), str(source / "10.png"), str(same_name), str(other),
+        ]
+        assert [item["name"] for item in report["images"]].count("02.png") == 2
+        assert manager.preview_image(str(same_name)).read_bytes() == b"external same name"
+        assert manager.preview_image(str(source / "02.png")).read_bytes() == b"two"
+        assert not (source / "01.png").exists()
+        assert not list(manager.uploads.root.iterdir())
+        unselected = external / "unselected.png"
+        unselected.write_bytes(b"not selected")
+        with pytest.raises(NotFoundError):
+            manager.preview_image(str(unselected))
+    finally:
+        manager.shutdown()
+
+
+def test_missing_external_images_warn_on_scan_but_reject_job(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    missing = tmp_path / "丢失 图片.png"
+    manager = JobManager(tmp_path / "data")
+    try:
+        report = manager.scan(source, [str(missing)]).to_dict()
+        assert report["ready"] is True
+        assert report["missing_images"] == [str(missing)]
+        assert any(str(missing) in warning for warning in report["warnings"])
+        with pytest.raises(RequestValidationError, match="missing"):
+            manager.submit({"source_dir": str(source), "image_paths": [str(missing)]})
+        assert not list(manager.jobs_root.iterdir())
+        for invalid in (["relative.png"], [str(source / "notes.txt")], "not a list", [None]):
+            with pytest.raises(RequestValidationError):
+                manager.scan(source, invalid)
+    finally:
+        manager.shutdown()
+
+
+def test_job_uses_explicit_external_image_order_and_keeps_originals(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "01.wav").write_bytes(b"audio")
+    (source / "02.wav").write_bytes(b"audio")
+    local = source / "cover.png"
+    local.write_bytes(b"local")
+    external = tmp_path / "外部" / "cover.png"
+    external.parent.mkdir()
+    external.write_bytes(b"external")
+    tool = tmp_path / "fake_tool.py"
+    tool.write_text(FAKE_TOOL, encoding="utf-8")
+    manager = JobManager(tmp_path / "data")
+    try:
+        record = manager.submit({
+            "source_dir": str(source), "image_paths": [str(external), str(local)],
+            "assignments": [1, 0], "ffmpeg": str(tool), "ffprobe": str(tool), "workers": 1,
+        })
+        assert record.job.images == (external, local)
+        assert record.job.assignments == (1, 0)
+        wait_for_state(manager, record.job_id, "succeeded")
+        assert local.read_bytes() == b"local"
+        assert external.read_bytes() == b"external"
+        assert not list(manager.uploads.root.iterdir())
+        black, *_ = manager._build_job("black", {"source_dir": str(source), "image_paths": []})
+        assert black.images == ()
+    finally:
+        manager.shutdown()
+
+
+def test_preferences_migrate_and_survive_workspace_loss_and_service_restart(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    root.mkdir()
+    legacy = {"settings": {"font-size": "56", "audio-codec": "alac", "merge-subtitles": True}, "source_dir": str(tmp_path / "old")}
+    (root / "workspace.json").write_text(json.dumps(legacy), encoding="utf-8")
+    first = JobManager(root)
+    try:
+        assert first.workspace.load()["settings"] == legacy["settings"]
+        assert json.loads((root / "settings.json").read_text(encoding="utf-8")) == legacy["settings"]
+        first.workspace.save({"image_paths": [str(tmp_path / "外部 图片.png")]})
+        assert "settings" not in json.loads((root / "workspace.json").read_text(encoding="utf-8"))
+    finally:
+        first.shutdown()
+    restarted = JobManager(root)
+    try:
+        assert restarted.workspace.load()["settings"] == legacy["settings"]
+        assert restarted.workspace.load()["image_paths"] == [str(tmp_path / "外部 图片.png")]
+        # Workspace corruption does not discard independently saved parameters.
+        (root / "workspace.json").write_text("broken", encoding="utf-8")
+        snapshot = restarted.workspace.load()
+        assert snapshot["source_dir"] == ""
+        assert snapshot["settings"] == legacy["settings"]
+        before = (root / "settings.json").read_bytes()
+        with pytest.raises(ValueError):
+            WorkspaceStore(root).save({"settings": {"font-size": float("nan")}})
+        assert (root / "settings.json").read_bytes() == before
+    finally:
+        restarted.shutdown()

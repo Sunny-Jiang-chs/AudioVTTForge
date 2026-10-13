@@ -99,7 +99,11 @@ def test_rest_resources_serve_ui_upload_and_job(tmp_path: Path) -> None:
             assert "AudioVTTForge" in response.read().decode("utf-8")
 
         body, content_type = multipart_body(
-            [("01.wav", b"audio"), ("01.wav.vtt", b"WEBVTT\n"), ("cover.png", b"image")]
+            [
+                ("01.wav", b"audio"),
+                ("01.wav.vtt", b"WEBVTT\n\n00:00.000 --> 00:01.000\nhello\n"),
+                ("cover.png", b"image"),
+            ]
         )
         upload_request = urllib.request.Request(
             f"{base_url}/api/v1/uploads",
@@ -118,6 +122,7 @@ def test_rest_resources_serve_ui_upload_and_job(tmp_path: Path) -> None:
                 "files": [item["id"] for item in uploads],
                 "audio": [by_name["01.wav"]["id"]],
                 "images": [by_name["cover.png"]["id"]],
+                "merge_subtitles": True,
                 "workers": 1,
                 "ffmpeg": str(tool),
                 "ffprobe": str(tool),
@@ -125,12 +130,20 @@ def test_rest_resources_serve_ui_upload_and_job(tmp_path: Path) -> None:
         )
         completed = wait_for_state(f"{base_url}/api/v1/jobs/{job['id']}", "succeeded")
         assert completed["output_ready"] is True
+        assert completed["merged_subtitle_ready"] is True
         assert Path(completed["output_path"]).parent == manager.outputs_root
         assert not manager.get(job["id"]).root.exists()
         events = request_json(f"{base_url}/api/v1/jobs/{job['id']}/events")
         assert events["items"][-1]["type"] == "job_finished"
         with urllib.request.urlopen(f"{base_url}{completed['download_url']}", timeout=5) as response:
             assert response.read() == b"fake mp4"
+        with urllib.request.urlopen(
+            f"{base_url}{completed['merged_subtitle_download_url']}", timeout=5
+        ) as response:
+            assert response.headers.get_content_type() == "text/vtt"
+            assert response.read().decode("utf-8") == (
+                "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nhello\n"
+            )
     finally:
         server.shutdown()
         server.server_close()
@@ -430,6 +443,72 @@ def test_rest_returns_validation_error_for_invalid_job(tmp_path: Path) -> None:
             assert "assignments" in payload["error"]["message"]
         else:
             raise AssertionError("request should fail with 422")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_rest_workspace_persists_settings_after_server_restart(tmp_path: Path) -> None:
+    expected_settings = {"font-size": "64", "workers": "4", "merge-subtitles": True}
+    for iteration in range(2):
+        server = web_module.create_server("127.0.0.1", 0, tmp_path / "data")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_port}/api/v1/workspace"
+        try:
+            if iteration == 0:
+                result = request_json(url, "POST", {
+                    "settings": expected_settings,
+                    "image_paths": [str(tmp_path / "独立 图片.png")],
+                })
+                assert result["settings"] == expected_settings
+                with pytest.raises(urllib.error.HTTPError) as error:
+                    request_json(url, "POST", {"settings": []})
+                assert error.value.code == 422
+            result = request_json(url)
+            assert result["settings"] == expected_settings
+            assert result["image_paths"] == [str(tmp_path / "独立 图片.png")]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+def test_rest_external_image_preview_requires_scan_and_distinguishes_same_names(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    local = source / "cover.png"
+    local.write_bytes(b"local image")
+    external = tmp_path / "图片目录" / "cover.png"
+    external.parent.mkdir()
+    external.write_bytes(b"external image")
+    unselected = tmp_path / "unselected.png"
+    unselected.write_bytes(b"must not be served")
+    server = web_module.create_server("127.0.0.1", 0, tmp_path / "data")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        preview = lambda path: f"{base}/api/v1/sources/image?{urlencode({'path': str(path)})}"
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(preview(external), timeout=5)
+        assert error.value.code == 404
+        missing = tmp_path / "missing.png"
+        report = request_json(f"{base}/api/v1/sources/scan", "POST", {
+            "path": str(source), "image_paths": [str(external), str(missing)],
+        })
+        assert [item["path"] for item in report["images"]] == [str(local), str(external)]
+        assert report["missing_images"] == [str(missing)]
+        for path, expected in [(local, b"local image"), (external, b"external image")]:
+            with urllib.request.urlopen(preview(path), timeout=5) as response:
+                assert response.read() == expected
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(preview(unselected), timeout=5)
+        assert error.value.code == 404
+        with pytest.raises(urllib.error.HTTPError) as error:
+            request_json(f"{base}/api/v1/jobs", "POST", {"source_dir": str(source), "image_paths": [str(missing)]})
+        assert error.value.code == 422
     finally:
         server.shutdown()
         server.server_close()
