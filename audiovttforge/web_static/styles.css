@@ -30,8 +30,9 @@ button, a, label { cursor: pointer; }
 .topbar { min-height: 62px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 10px clamp(20px, 4vw, 64px); border-bottom: 1px solid var(--line); background: #10151d; }
 .brand-lockup, .service-status, .panel-heading, .progress-row, .job-summary, .result-row, .footer { display: flex; align-items: center; }
 .brand-lockup { gap: 12px; }
-.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #4aa48f; border-radius: 7px; color: var(--accent-strong); font-size: 12px; font-weight: 800; letter-spacing: .04em; background: #142920; }
-.brand-name { font-size: 14px; font-weight: 700; letter-spacing: .02em; }
+.brand-mark { display: block; width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; object-fit: contain; }
+.brand-name { font-size: 17px; font-weight: 700; letter-spacing: .02em; }
+.brand-english { margin-left: 7px; color: var(--muted-strong); font-size: 12px; font-weight: 400; letter-spacing: 0; }
 .brand-caption, .intro-copy, .field-note, .footer { color: var(--muted); }
 .brand-caption { margin-top: 1px; font-size: 11px; }
 .service-status { gap: 8px; color: var(--muted-strong); font-size: 12px; }

@@ -96,7 +96,9 @@ def test_rest_resources_serve_ui_upload_and_job(tmp_path: Path) -> None:
     try:
         assert request_json(f"{base_url}/api/v1/health")["status"] == "ok"
         with urllib.request.urlopen(f"{base_url}/", timeout=5) as response:
-            assert "AudioVTTForge" in response.read().decode("utf-8")
+            assert "织声" in response.read().decode("utf-8")
+        with urllib.request.urlopen(f"{base_url}/favicon.ico", timeout=5) as response:
+            assert response.read().startswith(b"\x00\x00\x01\x00")
 
         body, content_type = multipart_body(
             [

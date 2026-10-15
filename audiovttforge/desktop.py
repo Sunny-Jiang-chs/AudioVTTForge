@@ -19,9 +19,9 @@ from typing import Any
 from .preferences import WorkspaceStore
 from .media import IMAGE_EXTENSIONS
 from .service import JobManager, ServiceError, default_data_root
-from .web import create_server
+from .web import create_server, static_root
 
-APP_TITLE = "AudioVTTForge"
+APP_TITLE = "织声 · Soundweaver"
 ACTIVE_STATES = {"queued", "running"}
 
 
@@ -210,7 +210,7 @@ class WindowLifecycle:
             ):
                 return False
             self._closing = True
-        self.window.set_title("AudioVTTForge · 正在保存并退出…")
+        self.window.set_title("织声 · 正在保存并退出…")
         threading.Thread(target=self._finish_close, name="desktop-close", daemon=False).start()
         return False
 
@@ -336,11 +336,11 @@ def show_startup_error(message: str) -> None:
     if sys.stderr is not None:
         print(message, file=sys.stderr)
     if os.name == "nt":
-        ctypes.windll.user32.MessageBoxW(None, message, "AudioVTTForge 无法启动", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, message, "织声无法启动", 0x10)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="启动 AudioVTTForge Windows 桌面应用。")
+    parser = argparse.ArgumentParser(description="启动织声（Soundweaver）Windows 桌面应用。")
     parser.add_argument("--data-root", type=Path, default=None, help="工作区设置和任务缓存目录")
     parser.add_argument("--debug", action="store_true", help="启用 WebView 开发工具")
     parser.add_argument("--debug-port", type=int, default=None, help="开发测试用 WebView2 调试端口")
@@ -362,6 +362,11 @@ def main(argv: list[str] | None = None) -> int:
             import webview
         except ImportError as exc:
             raise RuntimeError("缺少桌面运行依赖。请使用项目的桌面启动器，或安装 requirements.txt 中的依赖。") from exc
+        # Give source launches the same taskbar identity as the packaged app.
+        set_app_id = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID
+        set_app_id.argtypes = [ctypes.c_wchar_p]
+        set_app_id.restype = ctypes.c_long
+        set_app_id("MyP.Soundweaver")
         manager = DesktopJobManager(root)
         server = create_server("127.0.0.1", 0, manager=manager)
         server_thread = threading.Thread(target=server.serve_forever, name="desktop-rest", daemon=True)
@@ -384,7 +389,8 @@ def main(argv: list[str] | None = None) -> int:
         webview.settings["ALLOW_DOWNLOADS"] = True
         webview.settings["REMOTE_DEBUGGING_PORT"] = args.debug_port
         # Force modern Edge WebView2; falling back to IE cannot render this UI.
-        webview.start(gui="edgechromium", debug=args.debug)
+        webview.start(gui="edgechromium", debug=args.debug,
+                      icon=str(static_root() / "branding" / "soundweaver.ico"))
         return 0
     except Exception as exc:
         diagnostic = ""

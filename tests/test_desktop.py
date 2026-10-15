@@ -328,12 +328,13 @@ def test_entry_point_serves_shared_ui_without_console_and_always_closes_server(
 
     def start(**kwargs):
         assert kwargs["gui"] == "edgechromium"
+        assert Path(kwargs["icon"]).is_file()
         parts = urlsplit(capture["url"])
         base = f"{parts.scheme}://{parts.netloc}"
         with urllib.request.urlopen(f"{base}/api/v1/health", timeout=3) as response:
             assert json.loads(response.read())["status"] == "ok"
         with urllib.request.urlopen(base, timeout=3) as response:
-            assert b"AudioVTTForge" in response.read()
+            assert "织声" in response.read().decode("utf-8")
         assert capture["bridge"].get_workspace()["source_dir"] == ""
         if fail_start:
             raise RuntimeError("WebView2 failed to start")

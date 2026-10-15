@@ -76,10 +76,12 @@ foreach ($runtimeDll in @("libmpdec-4.dll", "ffi.dll")) {
         $extra += @("--add-binary", "$runtimePath;.")
     }
 }
-$name = "AudioVTTForge"
+$name = "Soundweaver"
 $entry = Join-Path $root "desktop_entry.py"
 $windowArgs = @("--windowed")
 $extra += @(
+    "--icon", "$root\audiovttforge\web_static\branding\soundweaver.ico",
+    "--version-file", "$root\assets\branding\windows-version-info.txt",
     "--collect-data", "webview",
     "--hidden-import", "webview.platforms.edgechromium",
     "--hidden-import", "webview.platforms.winforms"

@@ -23,7 +23,7 @@ def _json_print(value: object) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="audiovttforge")
+    parser = argparse.ArgumentParser(prog="audiovttforge", description="织声 · Soundweaver 媒体合成工具")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate = subparsers.add_parser("validate", help="validate a job JSON file")

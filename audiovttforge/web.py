@@ -198,7 +198,7 @@ class AudioVTTForgeHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if self.command == "GET":
             if path == "/favicon.ico":
-                self._send_bytes(b"", "image/x-icon", 204)
+                self._serve_static("branding/soundweaver.ico")
                 return
             if path == "/" or path.startswith("/assets/"):
                 relative = path.removeprefix("/assets/") if path.startswith("/assets/") else "index.html"
@@ -359,7 +359,7 @@ def create_server(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Run the AudioVTTForge local REST API and browser UI.")
+    parser = argparse.ArgumentParser(description="Run the Soundweaver local REST API and browser UI.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data-root", type=Path, default=None)
@@ -386,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         server = create_server(args.host, 0, manager=manager)
     port = server.server_address[1]
     url = f"http://{args.host}:{port}/"
-    print(f"AudioVTTForge web UI: {url}", flush=True)
+    print(f"Soundweaver web UI: {url}", flush=True)
     if args.open_browser and not args.no_open_browser:
         # The socket is already listening, so the browser can connect immediately.
         webbrowser.open(url)

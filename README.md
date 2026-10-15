@@ -1,6 +1,10 @@
-# AudioVTTForge
+# 织声 · Soundweaver
 
-AudioVTTForge 是一个运行在 Windows 上的本地媒体渲染工具，用于将 WAV/MP3 音频、对应的字幕和图片合成为 MP4 视频。应用只有一套桌面界面，由 pywebview / Edge WebView2 提供独立窗口与 Windows 文件选择器，Python 引擎和本地 REST API 执行渲染。CLI 继续可用。
+> 共同工作区：[MediaSuite](../README.md) · 共同开发与前端规范：[AGENTS.md](../AGENTS.md)。
+
+织声（Soundweaver，原 AudioVTTForge）是一个运行在 Windows 上的本地媒体渲染工具，用于将 WAV/MP3 音频、对应的字幕和图片合成为 MP4 视频。应用只有一套桌面界面，由 pywebview / Edge WebView2 提供独立窗口与 Windows 文件选择器，Python 引擎和本地 REST API 执行渲染。CLI 继续可用。
+
+对外名称统一为「织声」，与夜莺播放器配套。项目目录、Python 模块 `audiovttforge`、`AUDIOVTTFORGE_*` 环境变量、REST 服务标识及原有数据目录继续兼容，已有设置和工作区可直接沿用。图标母版与生成提示词见 [品牌资源](assets/branding/README.md)。
 
 ## 功能
 
@@ -28,7 +32,7 @@ AudioVTTForge 是一个运行在 Windows 上的本地媒体渲染工具，用于
 - `pywebview>=6.2,<7` 和 Microsoft Edge WebView2 Runtime
 - PyInstaller，用于构建 EXE
 
-默认 FFmpeg 路径由程序配置；可以通过 `AUDIOVTTFORGE_FFMPEG`、`AUDIOVTTFORGE_FFPROBE` 环境变量覆盖。Windows 11 和多数 Windows 10 电脑已安装 WebView2；缺失时请安装 Microsoft Edge WebView2 Evergreen Runtime。
+FFmpeg / FFprobe 优先读取 `AUDIOVTTFORGE_FFMPEG`、`AUDIOVTTFORGE_FFPROBE` 环境变量，其次使用 `D:\tools\ffmpeg\ffmpeg-9.0.1-essentials_build\bin\` 中的对应程序，再查找 `PATH`。可运行下方的 `doctor` 命令确认实际路径。Windows 11 和多数 Windows 10 电脑已安装 WebView2；缺失时请安装 Microsoft Edge WebView2 Evergreen Runtime。
 
 ## 运行源码
 
@@ -41,7 +45,9 @@ python -m audiovttforge.desktop
 
 Windows 下推荐双击项目根目录的 `start_desktop.bat`。它会打开独立应用窗口，不打开浏览器，也无需保留服务控制台。启动器优先使用 `D:\tools\audiovttforge-desktop\Scripts\python.exe`，其次使用系统 Python；如需自定义，设置 `AUDIOVTTFORGE_PYTHON` 为目标 `python.exe` 的完整路径。对应环境存在 `pythonw.exe` 时使用它隐藏控制台，启动错误会显示在原生提示框中。
 
-日常只需使用 `start_desktop.bat` 或构建后的 `AudioVTTForge.exe`。前端源码位于 `audiovttforge/web_static/`，窗口启动入口为 `audiovttforge/desktop.py`。
+本文 Python 命令均从项目目录执行。安装依赖、运行 CLI 和测试时应选用与启动器相同的解释器；例如本机可将命令中的 `python` 替换为 `& 'D:\tools\audiovttforge-desktop\Scripts\python.exe'`。`AUDIOVTTFORGE_PYTHON` 只供启动器和构建脚本选择解释器，不会改变 PowerShell 中 `python` 命令的解析。
+
+日常只需使用 `start_desktop.bat` 或构建后的 `Soundweaver.exe`。前端源码位于 `audiovttforge/web_static/`，窗口启动入口为 `audiovttforge/desktop.py`。
 
 桌面使用流程：
 
@@ -77,10 +83,12 @@ Windows 下推荐双击项目根目录的 `start_desktop.bat`。它会打开独�
 开发时可单独启动共享服务，以测试 REST API 或调试同一份前端：
 
 ```powershell
-python -m audiovttforge.web --port 8765 --open-browser
+python -m audiovttforge.web --port 8765 --data-root .\tmp\web-dev --open-browser
 ```
 
 开发浏览器使用 `web_static/` 中的同一份前端，不提供单独的浏览器应用、启动器或打包产物。浏览器内没有桌面文件选择器桥接，可以手动输入路径调试扫描和渲染。服务运行期间请保留控制台，按 Ctrl+C 停止；省略 `--open-browser` 可只启动 API 服务。
+
+上例会创建 `tmp/web-dev` 保存设置、工作区和任务缓存，并打开浏览器。省略 `--data-root` 时，独立服务默认使用 `%LOCALAPPDATA%\AudioVTTForge\web\`，也可通过 `AUDIOVTTFORGE_WEB_ROOT` 指定。数据目录隔离只影响设置与缓存；任务的最终 MP4/VTT 仍写入所选输出目录。
 
 如需测试真实桌面 WebView，可用 `python -m audiovttforge.desktop --debug-port 18931` 启动，再通过 Playwright 的 `chromium.connectOverCDP("http://127.0.0.1:18931")` 连接。调试端口默认关闭。
 
@@ -161,12 +169,26 @@ FFmpeg 和 FFprobe 默认使用源码中的 Windows 路径，也可以通过 `AU
 该脚本默认构建桌面应用的 onedir 目录版，不附带控制台，EXE 位于：
 
 ```text
-dist\AudioVTTForge\AudioVTTForge.exe
+dist\Soundweaver\Soundweaver.exe
 ```
 
-目录版不需要在启动时解包到 `%TEMP%`，适合日常使用。若确实需要单文件版本，可以执行 `.\build.ps1 -Mode onefile`；单文件版本依赖可写的 `%TEMP%`。构建优先使用与启动器相同的 Python 环境，也可以传入 `-Python` 指定完整路径。
+目录版不需要在启动时解包到 `%TEMP%`，适合日常使用。若确实需要单文件版本，可以执行 `.\build.ps1 -Mode onefile`；输出为 `dist/Soundweaver.exe`，需同时保留旁边的 `Soundweaver.exe.config`，并依赖可写的 `%TEMP%`。构建优先使用与启动器相同的 Python 环境，也可以传入 `-Python` 指定完整路径。
 
-构建工作、spec 文件和暂存产物都位于 `tmp/build/`。成功后把程序移动到 `dist`，旧版本移入回收站；若旧程序正在运行导致替换失败，新构建保留在 `tmp/build/` 并报告路径。分发时需要复制整个 `dist/AudioVTTForge/` 目录；目标电脑仍需安装 WebView2 Runtime，并确保 FFmpeg / FFprobe 路径可用。
+构建工作、spec 文件和暂存产物都位于 `tmp/build/`。成功后把程序移动到 `dist`，旧版本移入回收站；若旧程序正在运行导致替换失败，新构建保留在 `tmp/build/` 并报告路径。分发时需要复制整个 `dist/Soundweaver/` 目录；目标电脑仍需安装 WebView2 Runtime，并确保 FFmpeg / FFprobe 路径可用。
+
+构建包含织声的 EXE 图标、窗口图标、网页图标与 Windows 产品名称。改名前的 `dist/AudioVTTForge/` 若仍存在，是旧产物；新版本请从 `dist/Soundweaver/Soundweaver.exe` 启动。
+
+当前打包元数据 `assets/branding/windows-version-info.txt` 的版本字段为 `0.0.0.0`，尚不能用于区分每次源码构建。已有 `dist` 目录不代表它已包含最新源码修改。
+
+`diagnose-temp.bat` 调用 [环境诊断脚本](scripts/Diagnose-Environment.ps1)，默认只读检查临时目录与两种新产物路径，明确显示“未测试写入权限”，最后等待 Enter。命令行加 `-NoPause` 可取消等待；`-TempRoot <已有目录>` 可指定诊断目录。诊断不会启动应用，也不能代替 WebView2、FFmpeg 或真实渲染验收。
+
+只有显式加 `-WriteProbe` 才会测试文件写入和读回。探针使用指定临时目录下的唯一子目录，校验解析后绝对路径边界，拒绝链接目录及其祖先，不复用既有文件。完成后仅尝试移入回收站；回收或路径复核失败时报告保留路径并返回非零，不退回永久删除，也不处理旧 `_MEI` 或其他临时文件。以下示例把探针限定在项目 `tmp` 内：
+
+```powershell
+$probeRoot = Join-Path (Get-Location) 'tmp\environment-probes'
+New-Item -ItemType Directory -Path $probeRoot -Force | Out-Null
+.\diagnose-temp.bat -TempRoot $probeRoot -WriteProbe -NoPause
+```
 
 构建只生成桌面应用，通过 `--add-data` 包含唯一前端 `web_static` 和 pywebview 所需的 WebView2 桥接资源。
 
@@ -225,11 +247,15 @@ LRC 也接受 `01.lrc` 命名。带音频扩展名的 VTT 优先于 LRC；LRC �
 
 `audiovttforge` 包含媒体解析、任务模型、FFmpeg engine、CLI 和 REST API。`desktop.py` 管理 pywebview 窗口、本地文件桥接、设置和服务生命周期；唯一的前端位于 `web_static/`，通过 REST API 管理任务。`web.py` 是桌面应用共享的 REST 服务，也用于开发测试。
 
-运行 headless 测试：
+运行 headless 测试前，所选 Python 环境需已安装 `pytest`（运行依赖文件 `requirements.txt` 不包含它）。从项目目录运行，将测试文件留在新的 `tmp` 子目录，关闭字节码与 pytest 缓存写入：
 
 ```powershell
-python -m pytest -q
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$testRoot = Join-Path (Get-Location) ('tmp\pytest-' + [guid]::NewGuid().ToString('N'))
+python -B -m pytest -q -p no:cacheprovider --basetemp $testRoot
 ```
+
+每次使用新的 `$testRoot`；pytest 会清理复用的 `--basetemp` 目录。测试会写入临时任务与模拟媒体、启动测试用子进程和本机 HTTP 服务，不打开真实桌面窗口；这些检查通过也不等于真实 WebView2 与媒体渲染已验收。只检查命令入口和媒体工具时可用 `python -B -m audiovttforge --help`、`python -B -m audiovttforge doctor`，不会提交渲染任务。
 
 ## 许可证
 
